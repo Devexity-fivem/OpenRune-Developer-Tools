@@ -9,20 +9,29 @@ screenshots.
 
 ## Build and deploy
 
-Local builds compile against the Fluxious client's shaded jar (build it first
-with `gradlew :runelite-client:shadowJar`; override the path with
-`-PfluxClientJar=...`). Without it, the build falls back to the upstream
-RuneLite client artifact.
-
 ```
 gradlew jar
 ```
 
-The jar automatically deploys to each client's sideload folder:
+That is the whole setup. The jar deploys itself to every client on your
+machine, by looking for the `sideloaded-plugins` folder each one creates in your
+home directory — `~/.runelite`, `~/.rsprox`, `~/.fluxious`, or a fork's own
+directory, with nothing to configure. The build prints where it deployed.
 
-- `~/.runelite/sideloaded-plugins/`
-- `~/.rsprox/sideloaded-plugins/`
-- `~/.fluxious/sideloaded-plugins/`
+Deploying fails if one of those clients is running, because it holds its jar
+open. The other clients are still updated and the error names the ones that
+were not. A client only loads a new jar when it starts, so restart it after
+building.
+
+Two optional flags, for cases the default doesn't cover:
+
+```
+gradlew jar -PsideloadDirs=.runelite,.myclient   # deploy to exactly these
+gradlew jar -PclientJar=/path/to/client-shaded.jar   # compile against a client's jar
+```
+
+`-PclientJar` is only needed when your client exposes API this plugin uses;
+otherwise the build compiles against the upstream RuneLite artifact.
 
 Start the client with `--developer-mode`, enable **OpenRune-DeveloperTools**,
 then connect Claude:
@@ -138,6 +147,16 @@ automatically.
 | `get_projectile_history` | Projectiles launched recently, one entry each, with values and target |
 | `get_effect_history` | Animations and graphics played by NPCs/players recently |
 | `get_chat_history` | Chatbox messages: type, sender, message, tick, timestamp |
+| `get_combat_history` | Hitsplats applied: amount, type, actor hit, remaining health ratio |
+| `get_xp_history` | Experience gains: skill, xp gained, new total, level, boosted level |
+| `get_container_history` | Item container changes as per-item deltas (was/now/delta) |
+| `get_sound_history` | Sound effects played: id, source actor, scene position for area sounds |
+
+### Timeline
+
+| Tool | Description |
+|---|---|
+| `get_timeline` | Every channel merged into one tick-ordered stream — scripts, vars, projectiles, effects, chat, combat, experience, containers, sounds. Scripts are left out unless requested. Filter by `channels`, `fromTick`/`toTick` |
 
 ### Waiting
 

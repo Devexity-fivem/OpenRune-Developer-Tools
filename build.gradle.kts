@@ -15,14 +15,14 @@ java {
     targetCompatibility = JavaVersion.VERSION_11
 }
 
-// Local builds compile against the Fluxious client's shaded jar; when it isn't
-// present (CI), fall back to the upstream RuneLite client artifact.
-// Override the path with -PfluxClientJar=...
-val fluxClientJar = providers.gradleProperty("fluxClientJar")
-    .getOrElse("D:/RSPS/Fluxious/FluxRSClient/runelite-client/build/libs/runelite-client-shaded.jar")
-// java.io.File, not Gradle file(): on Linux CI the default Windows path
-// ("D:/...") would be parsed as a URL and fail the build
-val useLocalClient = File(fluxClientJar).exists()
+// Builds against the upstream RuneLite client artifact. Point -PclientJar at a
+// client's own shaded jar to compile against that instead, when it exposes API
+// this plugin uses.
+// java.io.File, not Gradle file(): an absolute Windows path would be parsed as a
+// URL and fail the build.
+val clientJar = (providers.gradleProperty("clientJar").orNull
+    ?: providers.gradleProperty("fluxClientJar").orNull)?.takeIf { it.isNotBlank() }
+val useLocalClient = clientJar != null && File(clientJar).exists()
 
 repositories {
     if (!useLocalClient) {
@@ -38,7 +38,7 @@ repositories {
 
 dependencies {
     if (useLocalClient) {
-        compileOnly(files(fluxClientJar))
+        compileOnly(files(clientJar!!))
     } else {
         compileOnly("net.runelite:client:latest.release")
     }
@@ -54,6 +54,25 @@ tasks.jar {
     }
 }
 
+// Every client that has ever run has created its own sideloaded-plugins folder,
+// so deploy to whichever ones exist rather than to a hardcoded list - a fork
+// using its own home directory is picked up with no configuration. Override with
+// -PsideloadDirs=.runelite,.myclient to target an exact set.
+fun sideloadTargets(): List<File> {
+    val home = File(System.getProperty("user.home"))
+    val requested = providers.gradleProperty("sideloadDirs").orNull
+    if (requested != null) {
+        return requested.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+            .map { File(home, "$it/sideloaded-plugins") }
+    }
+    val detected = home.listFiles { f: File -> File(f, "sideloaded-plugins").isDirectory }
+        ?.map { File(it, "sideloaded-plugins") }
+        ?.sortedBy { it.path }
+        .orEmpty()
+    // Nothing installed yet: fall back to RuneLite's own folder and create it.
+    return detected.ifEmpty { listOf(File(home, ".runelite/sideloaded-plugins")) }
+}
+
 // Copy the built jar into every client's sideloaded-plugins folder.
 // Runs automatically after jar; skipped on CI.
 val deploy = tasks.register("deploy") {
@@ -61,11 +80,23 @@ val deploy = tasks.register("deploy") {
     onlyIf { System.getenv("GITHUB_ACTIONS") == null }
     doLast {
         val jar = tasks.jar.get().archiveFile.get().asFile
-        for (clientDir in listOf(".runelite", ".rsprox", ".fluxious")) {
-            val target = File(System.getProperty("user.home"), "$clientDir/sideloaded-plugins")
+        val locked = mutableListOf<File>()
+        for (target in sideloadTargets()) {
             target.mkdirs()
-            jar.copyTo(File(target, jar.name), overwrite = true)
-            println("Deployed to $target")
+            // A running client holds its jar open on Windows. Deploy to the other
+            // clients first, then report every target that could not be replaced.
+            try {
+                jar.copyTo(File(target, jar.name), overwrite = true)
+                println("Deployed to $target")
+            } catch (e: java.io.IOException) {
+                locked += target
+            }
+        }
+        if (locked.isNotEmpty()) {
+            throw GradleException(
+                "Could not replace the jar in ${locked.joinToString()} - a running client " +
+                    "has it open and will keep the old build until it restarts. Close it and run again."
+            )
         }
     }
 }

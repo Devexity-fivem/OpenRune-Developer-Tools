@@ -49,6 +49,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
@@ -98,6 +99,8 @@ class McpTools
 	private static final long FRAME_TIMEOUT_MS = 5_000L;
 	private static final int MAX_COMPONENTS_PER_INTERFACE = 2048;
 	private static final int COMPONENT_SCAN_GAP = 64;
+	private static final Set<String> DEFAULT_TIMELINE_CHANNELS = Set.of(
+		"var", "projectile", "effect", "chat", "combat", "experience", "container", "sound");
 
 	private final Client client;
 	private final ClientThread clientThread;
@@ -537,6 +540,65 @@ class McpTools
 				args.has("type") ? args.get("type").getAsString() : null,
 				args.has("nameFilter") ? args.get("nameFilter").getAsString() : null,
 				optInt(args, "limit", 100))));
+
+		register("get_combat_history",
+			"Report hitsplats applied recently: damage amount, hitsplat type, the actor hit, its remaining health ratio and game tick. Use this for max hit, accuracy and splash checks instead of watching damage numbers on screen.",
+			schema(props(
+				"sinceMs", "integer", "Window in milliseconds looking back from now (default 10000)",
+				"actorName", "string", "Case-insensitive substring filter on the actor name",
+				"limit", "integer", "Max events returned (default 200)")),
+			args -> textResult(recorder.combatHistory(
+				optInt(args, "sinceMs", 10000),
+				args.has("actorName") ? args.get("actorName").getAsString() : null,
+				optInt(args, "limit", 200))));
+
+		register("get_xp_history",
+			"Report experience gains recently: skill, xp gained, new total xp, level and boosted level, with game tick. Use to check xp per action against the expected rate.",
+			schema(props(
+				"sinceMs", "integer", "Window in milliseconds looking back from now (default 60000)",
+				"skill", "string", "Only this skill, e.g. ATTACK, WOODCUTTING",
+				"limit", "integer", "Max events returned (default 200)")),
+			args -> textResult(recorder.experienceHistory(
+				optInt(args, "sinceMs", 60000),
+				args.has("skill") ? args.get("skill").getAsString() : null,
+				optInt(args, "limit", 200))));
+
+		register("get_container_history",
+			"Report item container changes recently as per-item deltas (was, now, delta), so you can see exactly what was gained, consumed or dropped and on which tick. 93 inventory, 94 worn, 95 bank.",
+			schema(props(
+				"sinceMs", "integer", "Window in milliseconds looking back from now (default 60000)",
+				"containerId", "integer", "Only this container id",
+				"limit", "integer", "Max events returned (default 200)")),
+			args -> textResult(recorder.containerHistory(
+				optInt(args, "sinceMs", 60000),
+				args.has("containerId") ? args.get("containerId").getAsInt() : null,
+				optInt(args, "limit", 200))));
+
+		register("get_sound_history",
+			"Report sound effects played recently: sound id, source actor, and for area sounds the scene position, with game tick.",
+			schema(props(
+				"sinceMs", "integer", "Window in milliseconds looking back from now (default 10000)",
+				"soundId", "integer", "Only this sound id",
+				"limit", "integer", "Max events returned (default 200)")),
+			args -> textResult(recorder.soundHistory(
+				optInt(args, "sinceMs", 10000),
+				args.has("soundId") ? args.get("soundId").getAsInt() : null,
+				optInt(args, "limit", 200))));
+
+		register("get_timeline",
+			"Every recorded channel merged into one tick-ordered stream: vars, projectiles, effects, chat, combat, experience, containers and sounds. Scripts fire many times a second, so they are left out unless requested via channels. Read this to see what happened around an action, instead of correlating the per-channel history tools by hand.",
+			schema(props(
+				"sinceMs", "integer", "Window in milliseconds looking back from now (default 10000)",
+				"channels", "array", "Only these channels: script, var, projectile, effect, chat, combat, experience, container, sound (default all but script)",
+				"fromTick", "integer", "Only events on or after this game tick",
+				"toTick", "integer", "Only events on or before this game tick",
+				"limit", "integer", "Max events returned, newest kept (default 300)")),
+			args -> textResult(recorder.timeline(
+				optInt(args, "sinceMs", 10000),
+				Objects.requireNonNullElse(optStringSet(args, "channels"), DEFAULT_TIMELINE_CHANNELS),
+				args.has("fromTick") ? args.get("fromTick").getAsInt() : null,
+				args.has("toTick") ? args.get("toTick").getAsInt() : null,
+				optInt(args, "limit", 300))));
 
 		// ---- waiting ----
 
@@ -2789,6 +2851,21 @@ class McpTools
 	private static int optInt(JsonObject args, String key, int def)
 	{
 		return args.has(key) ? args.get(key).getAsInt() : def;
+	}
+
+	/** Optional string-array argument, as a set; null when absent so callers read it as "no filter". */
+	private static Set<String> optStringSet(JsonObject args, String key)
+	{
+		if (!args.has(key) || !args.get(key).isJsonArray())
+		{
+			return null;
+		}
+		Set<String> values = new HashSet<>();
+		for (JsonElement element : args.get(key).getAsJsonArray())
+		{
+			values.add(element.getAsString());
+		}
+		return values.isEmpty() ? null : values;
 	}
 
 	private static JsonObject tool(String name, String description, JsonObject inputSchema)

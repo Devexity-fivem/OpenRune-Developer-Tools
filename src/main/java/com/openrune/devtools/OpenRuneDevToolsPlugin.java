@@ -29,6 +29,8 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonPrimitive;
 import com.google.inject.Provides;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Set;
 import java.util.WeakHashMap;
 import javax.inject.Inject;
@@ -36,16 +38,24 @@ import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Actor;
 import net.runelite.api.ActorSpotAnim;
 import net.runelite.api.Client;
+import net.runelite.api.Hitsplat;
+import net.runelite.api.Item;
+import net.runelite.api.ItemComposition;
 import net.runelite.api.NPC;
 import net.runelite.api.Projectile;
 import net.runelite.api.ScriptEvent;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.events.AnimationChanged;
+import net.runelite.api.events.AreaSoundEffectPlayed;
 import net.runelite.api.events.ChatMessage;
 import net.runelite.api.events.GraphicChanged;
+import net.runelite.api.events.HitsplatApplied;
+import net.runelite.api.events.ItemContainerChanged;
 import net.runelite.api.events.MenuOpened;
 import net.runelite.api.events.ProjectileMoved;
 import net.runelite.api.events.ScriptPreFired;
+import net.runelite.api.events.SoundEffectPlayed;
+import net.runelite.api.events.StatChanged;
 import net.runelite.api.events.VarClientIntChanged;
 import net.runelite.api.events.VarClientStrChanged;
 import net.runelite.api.events.VarbitChanged;
@@ -90,7 +100,7 @@ public class OpenRuneDevToolsPlugin extends Plugin
 	{
 		recorder = new McpEventRecorder();
 		itemIconTool = new ItemIconTool(client, clientThread);
-		startServer();
+		tryStartServer();
 		if (config.autoUpdate())
 		{
 			new UpdateChecker(client, clientThread).checkAsync();
@@ -251,27 +261,111 @@ public class OpenRuneDevToolsPlugin extends Plugin
 	}
 
 	@Subscribe
+	public void onHitsplatApplied(HitsplatApplied event)
+	{
+		Actor actor = event.getActor();
+		if (recorder == null || actor == null)
+		{
+			return;
+		}
+		Hitsplat hitsplat = event.getHitsplat();
+		recorder.recordHitsplat(hitsplat.getHitsplatType(),
+			hitsplat.getAmount(),
+			actor instanceof NPC ? "npc" : "player",
+			actor.getName(),
+			actor instanceof NPC ? ((NPC) actor).getId() : null,
+			actor.getHealthRatio(),
+			actor.getHealthScale(),
+			client.getTickCount());
+	}
+
+	@Subscribe
+	public void onStatChanged(StatChanged event)
+	{
+		if (recorder != null)
+		{
+			recorder.recordExperience(event.getSkill().getName(), event.getXp(), event.getLevel(),
+				event.getBoostedLevel(), client.getTickCount());
+		}
+	}
+
+	@Subscribe
+	public void onItemContainerChanged(ItemContainerChanged event)
+	{
+		if (recorder == null)
+		{
+			return;
+		}
+		Map<Integer, Integer> contents = new HashMap<>();
+		for (Item item : event.getItemContainer().getItems())
+		{
+			if (item.getId() != -1 && !isPlaceholder(item.getId()))
+			{
+				contents.merge(item.getId(), item.getQuantity(), Integer::sum);
+			}
+		}
+		recorder.recordContainer(event.getContainerId(), contents, client.getTickCount());
+	}
+
+	@Subscribe
+	public void onSoundEffectPlayed(SoundEffectPlayed event)
+	{
+		if (recorder == null)
+		{
+			return;
+		}
+		Actor source = event.getSource();
+		recorder.recordSound("sound", event.getSoundId(), null, null,
+			source != null ? source.getName() : null, client.getTickCount());
+	}
+
+	@Subscribe
+	public void onAreaSoundEffectPlayed(AreaSoundEffectPlayed event)
+	{
+		if (recorder == null)
+		{
+			return;
+		}
+		Actor source = event.getSource();
+		recorder.recordSound("areaSound", event.getSoundId(), event.getSceneX(), event.getSceneY(),
+			source != null ? source.getName() : null, client.getTickCount());
+	}
+
+	@Subscribe
 	public void onConfigChanged(ConfigChanged event)
 	{
-		if (OpenRuneDevToolsConfig.GROUP.equals(event.getGroup()) && server != null)
+		if (OpenRuneDevToolsConfig.GROUP.equals(event.getGroup()))
 		{
 			stopServer();
-			try
-			{
-				startServer();
-			}
-			catch (Exception e)
-			{
-				log.error("Failed to restart MCP server on port {}", config.port(), e);
-			}
+			tryStartServer();
+		}
+	}
+
+	/** A busy port must not fail startUp, or the plugin never enables and its port can't be changed. */
+	private void tryStartServer()
+	{
+		try
+		{
+			startServer();
+		}
+		catch (Exception e)
+		{
+			log.error("Failed to start MCP server on port {}; pick a free port in the plugin settings", config.port(), e);
 		}
 	}
 
 	private void startServer() throws Exception
 	{
-		server = new McpHttpServer(config.port(), new McpTools(client, clientThread, drawManager, recorder));
-		server.start();
+		McpHttpServer started = new McpHttpServer(config.port(), new McpTools(client, clientThread, drawManager, recorder));
+		started.start();
+		server = started;
 		log.info("MCP server listening on http://127.0.0.1:{}/mcp", config.port());
+	}
+
+	private boolean isPlaceholder(int itemId)
+	{
+		ItemComposition item = client.getItemDefinition(itemId);
+		return item.getPlaceholderTemplateId() != -1;
 	}
 
 	private void stopServer()
