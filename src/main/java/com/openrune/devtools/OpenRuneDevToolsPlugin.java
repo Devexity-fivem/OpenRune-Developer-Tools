@@ -100,7 +100,7 @@ public class OpenRuneDevToolsPlugin extends Plugin
 	{
 		recorder = new McpEventRecorder();
 		itemIconTool = new ItemIconTool(client, clientThread);
-		startServer();
+		tryStartServer();
 		if (config.autoUpdate())
 		{
 			new UpdateChecker(client, clientThread).checkAsync();
@@ -334,24 +334,31 @@ public class OpenRuneDevToolsPlugin extends Plugin
 	@Subscribe
 	public void onConfigChanged(ConfigChanged event)
 	{
-		if (OpenRuneDevToolsConfig.GROUP.equals(event.getGroup()) && server != null)
+		if (OpenRuneDevToolsConfig.GROUP.equals(event.getGroup()))
 		{
 			stopServer();
-			try
-			{
-				startServer();
-			}
-			catch (Exception e)
-			{
-				log.error("Failed to restart MCP server on port {}", config.port(), e);
-			}
+			tryStartServer();
+		}
+	}
+
+	/** A busy port must not fail startUp, or the plugin never enables and its port can't be changed. */
+	private void tryStartServer()
+	{
+		try
+		{
+			startServer();
+		}
+		catch (Exception e)
+		{
+			log.error("Failed to start MCP server on port {}; pick a free port in the plugin settings", config.port(), e);
 		}
 	}
 
 	private void startServer() throws Exception
 	{
-		server = new McpHttpServer(config.port(), new McpTools(client, clientThread, drawManager, recorder));
-		server.start();
+		McpHttpServer started = new McpHttpServer(config.port(), new McpTools(client, clientThread, drawManager, recorder));
+		started.start();
+		server = started;
 		log.info("MCP server listening on http://127.0.0.1:{}/mcp", config.port());
 	}
 
