@@ -72,6 +72,7 @@ class McpEventRecorder
 	private final Map<String, Integer> lastIntValues = new HashMap<>();
 	private final Map<Integer, String> lastStrValues = new HashMap<>();
 	private final Map<String, Integer> lastSkillXp = new HashMap<>();
+	private final Map<String, Integer> lastBoostedLevels = new HashMap<>();
 	private final Map<Integer, Map<Integer, Integer>> lastContainerContents = new HashMap<>();
 	private long seq = 1;
 
@@ -93,11 +94,15 @@ class McpEventRecorder
 
 	synchronized void recordVar(String type, int id, int value, int tick)
 	{
+		Integer old = lastIntValues.put(type + ":" + id, value);
+		if (old != null && old == value)
+		{
+			return;
+		}
 		JsonObject entry = baseEntry("var", tick);
 		entry.addProperty("type", type);
 		entry.addProperty("id", id);
 		entry.addProperty("value", value);
-		Integer old = lastIntValues.put(type + ":" + id, value);
 		if (old != null)
 		{
 			entry.addProperty("oldValue", old);
@@ -108,11 +113,15 @@ class McpEventRecorder
 
 	synchronized void recordVarStr(int id, String value, int tick)
 	{
+		String old = lastStrValues.put(id, value);
+		if (old != null && old.equals(value))
+		{
+			return;
+		}
 		JsonObject entry = baseEntry("var", tick);
 		entry.addProperty("type", "varcstr");
 		entry.addProperty("id", id);
 		entry.addProperty("value", value);
-		String old = lastStrValues.put(id, value);
 		if (old != null)
 		{
 			entry.addProperty("oldValue", old);
@@ -189,16 +198,19 @@ class McpEventRecorder
 
 	synchronized void recordExperience(String skill, int xp, int level, int boostedLevel, int tick)
 	{
+		Integer oldXp = lastSkillXp.put(skill, xp);
+		Integer oldBoostedLevel = lastBoostedLevels.put(skill, boostedLevel);
+		// The login stat refresh fires for every skill; only real gains, drains and restores are events.
+		if (oldXp == null || (oldXp == xp && oldBoostedLevel == boostedLevel))
+		{
+			return;
+		}
 		JsonObject entry = baseEntry("experience", tick);
 		entry.addProperty("skill", skill);
 		entry.addProperty("xp", xp);
 		entry.addProperty("level", level);
 		entry.addProperty("boostedLevel", boostedLevel);
-		Integer old = lastSkillXp.put(skill, xp);
-		if (old != null)
-		{
-			entry.addProperty("xpGained", xp - old);
-		}
+		entry.addProperty("xpGained", xp - oldXp);
 		push(experience, XP_BUFFER, entry);
 	}
 
