@@ -156,7 +156,7 @@ automatically.
 
 | Tool | Description |
 |---|---|
-| `get_timeline` | Every channel merged into one tick-ordered stream — scripts, vars, projectiles, effects, chat, combat, experience, containers, sounds. Filter by `channels`, `fromTick`/`toTick` |
+| `get_timeline` | Every channel merged into one tick-ordered stream — scripts, vars, projectiles, effects, chat, combat, experience, containers, sounds. Scripts are left out unless requested. Filter by `channels`, `fromTick`/`toTick` |
 
 ### Waiting
 
