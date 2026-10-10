@@ -63,7 +63,7 @@ class McpEventRecorder
 
 	synchronized void recordScript(int scriptId, Object[] arguments, int tick)
 	{
-		JsonObject entry = baseEntry(tick);
+		JsonObject entry = baseEntry("script", tick);
 		entry.addProperty("scriptId", scriptId);
 		if (arguments != null && arguments.length > 0)
 		{
@@ -79,7 +79,7 @@ class McpEventRecorder
 
 	synchronized void recordVar(String type, int id, int value, int tick)
 	{
-		JsonObject entry = baseEntry(tick);
+		JsonObject entry = baseEntry("var", tick);
 		entry.addProperty("type", type);
 		entry.addProperty("id", id);
 		entry.addProperty("value", value);
@@ -94,7 +94,7 @@ class McpEventRecorder
 
 	synchronized void recordVarStr(int id, String value, int tick)
 	{
-		JsonObject entry = baseEntry(tick);
+		JsonObject entry = baseEntry("var", tick);
 		entry.addProperty("type", "varcstr");
 		entry.addProperty("id", id);
 		entry.addProperty("value", value);
@@ -108,7 +108,7 @@ class McpEventRecorder
 
 	synchronized void recordProjectile(JsonObject detail, int tick)
 	{
-		JsonObject entry = baseEntry(tick);
+		JsonObject entry = baseEntry("projectile", tick);
 		for (Map.Entry<String, JsonElement> e : detail.entrySet())
 		{
 			entry.add(e.getKey(), e.getValue());
@@ -119,7 +119,7 @@ class McpEventRecorder
 	synchronized void recordEffect(String kind, String actorType, String actorName, Integer npcId,
 		JsonElement value, int tick)
 	{
-		JsonObject entry = baseEntry(tick);
+		JsonObject entry = baseEntry("effect", tick);
 		entry.addProperty("kind", kind);
 		entry.addProperty("actorType", actorType);
 		if (actorName != null)
@@ -136,7 +136,7 @@ class McpEventRecorder
 
 	synchronized void recordChat(String type, String name, String sender, String message, int tick)
 	{
-		JsonObject entry = baseEntry(tick);
+		JsonObject entry = baseEntry("chat", tick);
 		entry.addProperty("type", type);
 		if (name != null && !name.isEmpty())
 		{
@@ -303,10 +303,11 @@ class McpEventRecorder
 		return result;
 	}
 
-	private JsonObject baseEntry(int tick)
+	private JsonObject baseEntry(String channel, int tick)
 	{
 		JsonObject entry = new JsonObject();
 		entry.addProperty("seq", seq++);
+		entry.addProperty("channel", channel);
 		entry.addProperty("timeMs", System.currentTimeMillis());
 		entry.addProperty("tick", tick);
 		return entry;
