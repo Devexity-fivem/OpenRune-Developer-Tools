@@ -32,12 +32,16 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Deque;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
- * Rolling history of clientscript invocations and varbit/varp/varc changes,
- * recorded from the event bus and queried by the MCP history tools.
+ * Rolling history of clientscript invocations, varbit/varp/varc changes, combat,
+ * experience, item containers and sounds, recorded from the event bus and queried
+ * by the MCP history tools. Every entry carries the game tick and a global sequence
+ * number, ready to be merged back into one ordered stream.
  * Record methods are called on the client thread; queries come from HTTP threads.
  */
 class McpEventRecorder
@@ -48,6 +52,10 @@ class McpEventRecorder
 	private static final int PROJECTILE_BUFFER = 1000;
 	private static final int EFFECT_BUFFER = 2000;
 	private static final int CHAT_BUFFER = 1000;
+	private static final int COMBAT_BUFFER = 2000;
+	private static final int XP_BUFFER = 2000;
+	private static final int CONTAINER_BUFFER = 1000;
+	private static final int SOUND_BUFFER = 2000;
 	private static final int MAX_ARGS_LENGTH = 160;
 	private static final int MAX_COUNT_ROWS = 50;
 
@@ -57,8 +65,14 @@ class McpEventRecorder
 	private final Deque<JsonObject> projectiles = new ArrayDeque<>();
 	private final Deque<JsonObject> effects = new ArrayDeque<>();
 	private final Deque<JsonObject> chat = new ArrayDeque<>();
+	private final Deque<JsonObject> combat = new ArrayDeque<>();
+	private final Deque<JsonObject> experience = new ArrayDeque<>();
+	private final Deque<JsonObject> containers = new ArrayDeque<>();
+	private final Deque<JsonObject> sounds = new ArrayDeque<>();
 	private final Map<String, Integer> lastIntValues = new HashMap<>();
 	private final Map<Integer, String> lastStrValues = new HashMap<>();
+	private final Map<String, Integer> lastSkillXp = new HashMap<>();
+	private final Map<Integer, Map<Integer, Integer>> lastContainerContents = new HashMap<>();
 	private long seq = 1;
 
 	synchronized void recordScript(int scriptId, Object[] arguments, int tick)
@@ -148,6 +162,81 @@ class McpEventRecorder
 		}
 		entry.addProperty("message", message);
 		push(chat, CHAT_BUFFER, entry);
+	}
+
+	synchronized void recordHitsplat(int hitsplatType, int amount, String actorType, String actorName,
+		Integer npcId, int healthRatio, int healthScale, int tick)
+	{
+		JsonObject entry = baseEntry("combat", tick);
+		entry.addProperty("hitsplatType", hitsplatType);
+		entry.addProperty("amount", amount);
+		entry.addProperty("actorType", actorType);
+		if (actorName != null)
+		{
+			entry.addProperty("actor", actorName);
+		}
+		if (npcId != null)
+		{
+			entry.addProperty("npcId", npcId);
+		}
+		if (healthScale > 0)
+		{
+			entry.addProperty("healthRatio", healthRatio);
+			entry.addProperty("healthScale", healthScale);
+		}
+		push(combat, COMBAT_BUFFER, entry);
+	}
+
+	synchronized void recordExperience(String skill, int xp, int level, int boostedLevel, int tick)
+	{
+		JsonObject entry = baseEntry("experience", tick);
+		entry.addProperty("skill", skill);
+		entry.addProperty("xp", xp);
+		entry.addProperty("level", level);
+		entry.addProperty("boostedLevel", boostedLevel);
+		Integer old = lastSkillXp.put(skill, xp);
+		if (old != null)
+		{
+			entry.addProperty("xpGained", xp - old);
+		}
+		push(experience, XP_BUFFER, entry);
+	}
+
+	synchronized void recordContainer(int containerId, Map<Integer, Integer> contents, int tick)
+	{
+		Map<Integer, Integer> previous = lastContainerContents.put(containerId, contents);
+		if (previous == null)
+		{
+			// First sighting is the baseline to diff against, not a change worth reporting.
+			return;
+		}
+		JsonArray changes = quantityChanges(previous, contents);
+		if (changes.size() == 0)
+		{
+			return;
+		}
+		JsonObject entry = baseEntry("container", tick);
+		entry.addProperty("containerId", containerId);
+		entry.add("changes", changes);
+		push(containers, CONTAINER_BUFFER, entry);
+	}
+
+	synchronized void recordSound(String kind, int soundId, Integer sceneX, Integer sceneY,
+		String source, int tick)
+	{
+		JsonObject entry = baseEntry("sound", tick);
+		entry.addProperty("kind", kind);
+		entry.addProperty("soundId", soundId);
+		if (sceneX != null && sceneY != null)
+		{
+			entry.addProperty("sceneX", sceneX);
+			entry.addProperty("sceneY", sceneY);
+		}
+		if (source != null)
+		{
+			entry.addProperty("source", source);
+		}
+		push(sounds, SOUND_BUFFER, entry);
 	}
 
 	synchronized JsonObject chatHistory(long sinceMs, String type, String nameFilter, int limit)
@@ -301,6 +390,123 @@ class McpEventRecorder
 		result.addProperty("total", matched.size());
 		result.add("events", tail(matched, limit));
 		return result;
+	}
+
+	synchronized JsonObject combatHistory(long sinceMs, String actorFilter, int limit)
+	{
+		long cutoff = System.currentTimeMillis() - sinceMs;
+		String filter = actorFilter != null ? actorFilter.toLowerCase() : null;
+		List<JsonObject> matched = new ArrayList<>();
+		for (JsonObject entry : combat)
+		{
+			if (entry.get("timeMs").getAsLong() < cutoff)
+			{
+				continue;
+			}
+			if (filter != null && (!entry.has("actor")
+				|| !entry.get("actor").getAsString().toLowerCase().contains(filter)))
+			{
+				continue;
+			}
+			matched.add(entry);
+		}
+		JsonObject result = new JsonObject();
+		result.addProperty("windowMs", sinceMs);
+		result.addProperty("total", matched.size());
+		result.add("events", tail(matched, limit));
+		return result;
+	}
+
+	synchronized JsonObject experienceHistory(long sinceMs, String skill, int limit)
+	{
+		long cutoff = System.currentTimeMillis() - sinceMs;
+		List<JsonObject> matched = new ArrayList<>();
+		for (JsonObject entry : experience)
+		{
+			if (entry.get("timeMs").getAsLong() < cutoff)
+			{
+				continue;
+			}
+			if (skill != null && !skill.equalsIgnoreCase(entry.get("skill").getAsString()))
+			{
+				continue;
+			}
+			matched.add(entry);
+		}
+		JsonObject result = new JsonObject();
+		result.addProperty("windowMs", sinceMs);
+		result.addProperty("total", matched.size());
+		result.add("events", tail(matched, limit));
+		return result;
+	}
+
+	synchronized JsonObject containerHistory(long sinceMs, Integer containerId, int limit)
+	{
+		long cutoff = System.currentTimeMillis() - sinceMs;
+		List<JsonObject> matched = new ArrayList<>();
+		for (JsonObject entry : containers)
+		{
+			if (entry.get("timeMs").getAsLong() < cutoff)
+			{
+				continue;
+			}
+			if (containerId != null && entry.get("containerId").getAsInt() != containerId)
+			{
+				continue;
+			}
+			matched.add(entry);
+		}
+		JsonObject result = new JsonObject();
+		result.addProperty("windowMs", sinceMs);
+		result.addProperty("total", matched.size());
+		result.add("events", tail(matched, limit));
+		return result;
+	}
+
+	synchronized JsonObject soundHistory(long sinceMs, Integer soundId, int limit)
+	{
+		long cutoff = System.currentTimeMillis() - sinceMs;
+		List<JsonObject> matched = new ArrayList<>();
+		for (JsonObject entry : sounds)
+		{
+			if (entry.get("timeMs").getAsLong() < cutoff)
+			{
+				continue;
+			}
+			if (soundId != null && entry.get("soundId").getAsInt() != soundId)
+			{
+				continue;
+			}
+			matched.add(entry);
+		}
+		JsonObject result = new JsonObject();
+		result.addProperty("windowMs", sinceMs);
+		result.addProperty("total", matched.size());
+		result.add("events", tail(matched, limit));
+		return result;
+	}
+
+	private static JsonArray quantityChanges(Map<Integer, Integer> before, Map<Integer, Integer> after)
+	{
+		Set<Integer> itemIds = new HashSet<>(before.keySet());
+		itemIds.addAll(after.keySet());
+		JsonArray changes = new JsonArray();
+		for (int itemId : itemIds)
+		{
+			int was = before.getOrDefault(itemId, 0);
+			int now = after.getOrDefault(itemId, 0);
+			if (was == now)
+			{
+				continue;
+			}
+			JsonObject change = new JsonObject();
+			change.addProperty("itemId", itemId);
+			change.addProperty("was", was);
+			change.addProperty("now", now);
+			change.addProperty("delta", now - was);
+			changes.add(change);
+		}
+		return changes;
 	}
 
 	private JsonObject baseEntry(String channel, int tick)

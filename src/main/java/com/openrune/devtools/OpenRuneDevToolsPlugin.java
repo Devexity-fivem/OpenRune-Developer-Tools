@@ -29,6 +29,8 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonPrimitive;
 import com.google.inject.Provides;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Set;
 import java.util.WeakHashMap;
 import javax.inject.Inject;
@@ -36,16 +38,23 @@ import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Actor;
 import net.runelite.api.ActorSpotAnim;
 import net.runelite.api.Client;
+import net.runelite.api.Hitsplat;
+import net.runelite.api.Item;
 import net.runelite.api.NPC;
 import net.runelite.api.Projectile;
 import net.runelite.api.ScriptEvent;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.events.AnimationChanged;
+import net.runelite.api.events.AreaSoundEffectPlayed;
 import net.runelite.api.events.ChatMessage;
 import net.runelite.api.events.GraphicChanged;
+import net.runelite.api.events.HitsplatApplied;
+import net.runelite.api.events.ItemContainerChanged;
 import net.runelite.api.events.MenuOpened;
 import net.runelite.api.events.ProjectileMoved;
 import net.runelite.api.events.ScriptPreFired;
+import net.runelite.api.events.SoundEffectPlayed;
+import net.runelite.api.events.StatChanged;
 import net.runelite.api.events.VarClientIntChanged;
 import net.runelite.api.events.VarClientStrChanged;
 import net.runelite.api.events.VarbitChanged;
@@ -248,6 +257,77 @@ public class OpenRuneDevToolsPlugin extends Plugin
 			actor instanceof NPC ? ((NPC) actor).getId() : null,
 			graphics,
 			client.getTickCount());
+	}
+
+	@Subscribe
+	public void onHitsplatApplied(HitsplatApplied event)
+	{
+		Actor actor = event.getActor();
+		if (recorder == null || actor == null)
+		{
+			return;
+		}
+		Hitsplat hitsplat = event.getHitsplat();
+		recorder.recordHitsplat(hitsplat.getHitsplatType(),
+			hitsplat.getAmount(),
+			actor instanceof NPC ? "npc" : "player",
+			actor.getName(),
+			actor instanceof NPC ? ((NPC) actor).getId() : null,
+			actor.getHealthRatio(),
+			actor.getHealthScale(),
+			client.getTickCount());
+	}
+
+	@Subscribe
+	public void onStatChanged(StatChanged event)
+	{
+		if (recorder != null)
+		{
+			recorder.recordExperience(event.getSkill().getName(), event.getXp(), event.getLevel(),
+				event.getBoostedLevel(), client.getTickCount());
+		}
+	}
+
+	@Subscribe
+	public void onItemContainerChanged(ItemContainerChanged event)
+	{
+		if (recorder == null)
+		{
+			return;
+		}
+		Map<Integer, Integer> contents = new HashMap<>();
+		for (Item item : event.getItemContainer().getItems())
+		{
+			if (item.getId() != -1)
+			{
+				contents.merge(item.getId(), item.getQuantity(), Integer::sum);
+			}
+		}
+		recorder.recordContainer(event.getContainerId(), contents, client.getTickCount());
+	}
+
+	@Subscribe
+	public void onSoundEffectPlayed(SoundEffectPlayed event)
+	{
+		if (recorder == null)
+		{
+			return;
+		}
+		Actor source = event.getSource();
+		recorder.recordSound("sound", event.getSoundId(), null, null,
+			source != null ? source.getName() : null, client.getTickCount());
+	}
+
+	@Subscribe
+	public void onAreaSoundEffectPlayed(AreaSoundEffectPlayed event)
+	{
+		if (recorder == null)
+		{
+			return;
+		}
+		Actor source = event.getSource();
+		recorder.recordSound("areaSound", event.getSoundId(), event.getSceneX(), event.getSceneY(),
+			source != null ? source.getName() : null, client.getTickCount());
 	}
 
 	@Subscribe

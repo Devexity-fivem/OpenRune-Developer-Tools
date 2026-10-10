@@ -138,6 +138,11 @@ automatically.
 | `get_projectile_history` | Projectiles launched recently, one entry each, with values and target |
 | `get_effect_history` | Animations and graphics played by NPCs/players recently |
 | `get_chat_history` | Chatbox messages: type, sender, message, tick, timestamp |
+| `get_combat_history` | Hitsplats applied: amount, type, actor hit, remaining health ratio |
+| `get_xp_history` | Experience gains: skill, xp gained, new total, level, boosted level |
+| `get_container_history` | Item container changes as per-item deltas (was/now/delta) |
+| `get_sound_history` | Sound effects played: id, source actor, scene position for area sounds |
+
 
 ### Waiting
 

@@ -538,6 +538,51 @@ class McpTools
 				args.has("nameFilter") ? args.get("nameFilter").getAsString() : null,
 				optInt(args, "limit", 100))));
 
+		register("get_combat_history",
+			"Report hitsplats applied recently: damage amount, hitsplat type, the actor hit, its remaining health ratio and game tick. Use this for max hit, accuracy and splash checks instead of watching damage numbers on screen.",
+			schema(props(
+				"sinceMs", "integer", "Window in milliseconds looking back from now (default 10000)",
+				"actorName", "string", "Case-insensitive substring filter on the actor name",
+				"limit", "integer", "Max events returned (default 200)")),
+			args -> textResult(recorder.combatHistory(
+				optInt(args, "sinceMs", 10000),
+				args.has("actorName") ? args.get("actorName").getAsString() : null,
+				optInt(args, "limit", 200))));
+
+		register("get_xp_history",
+			"Report experience gains recently: skill, xp gained, new total xp, level and boosted level, with game tick. Use to check xp per action against the expected rate.",
+			schema(props(
+				"sinceMs", "integer", "Window in milliseconds looking back from now (default 60000)",
+				"skill", "string", "Only this skill, e.g. ATTACK, WOODCUTTING",
+				"limit", "integer", "Max events returned (default 200)")),
+			args -> textResult(recorder.experienceHistory(
+				optInt(args, "sinceMs", 60000),
+				args.has("skill") ? args.get("skill").getAsString() : null,
+				optInt(args, "limit", 200))));
+
+		register("get_container_history",
+			"Report item container changes recently as per-item deltas (was, now, delta), so you can see exactly what was gained, consumed or dropped and on which tick. 93 inventory, 94 worn, 95 bank.",
+			schema(props(
+				"sinceMs", "integer", "Window in milliseconds looking back from now (default 60000)",
+				"containerId", "integer", "Only this container id",
+				"limit", "integer", "Max events returned (default 200)")),
+			args -> textResult(recorder.containerHistory(
+				optInt(args, "sinceMs", 60000),
+				args.has("containerId") ? args.get("containerId").getAsInt() : null,
+				optInt(args, "limit", 200))));
+
+		register("get_sound_history",
+			"Report sound effects played recently: sound id, source actor, and for area sounds the scene position, with game tick.",
+			schema(props(
+				"sinceMs", "integer", "Window in milliseconds looking back from now (default 10000)",
+				"soundId", "integer", "Only this sound id",
+				"limit", "integer", "Max events returned (default 200)")),
+			args -> textResult(recorder.soundHistory(
+				optInt(args, "sinceMs", 10000),
+				args.has("soundId") ? args.get("soundId").getAsInt() : null,
+				optInt(args, "limit", 200))));
+
+
 		// ---- waiting ----
 
 		register("wait_for",
@@ -2790,6 +2835,7 @@ class McpTools
 	{
 		return args.has(key) ? args.get(key).getAsInt() : def;
 	}
+
 
 	private static JsonObject tool(String name, String description, JsonObject inputSchema)
 	{
