@@ -61,11 +61,24 @@ val deploy = tasks.register("deploy") {
     onlyIf { System.getenv("GITHUB_ACTIONS") == null }
     doLast {
         val jar = tasks.jar.get().archiveFile.get().asFile
+        val locked = mutableListOf<File>()
         for (clientDir in listOf(".runelite", ".rsprox", ".fluxious")) {
             val target = File(System.getProperty("user.home"), "$clientDir/sideloaded-plugins")
             target.mkdirs()
-            jar.copyTo(File(target, jar.name), overwrite = true)
-            println("Deployed to $target")
+            // A running client holds its jar open on Windows. Deploy to the other
+            // clients first, then report every target that could not be replaced.
+            try {
+                jar.copyTo(File(target, jar.name), overwrite = true)
+                println("Deployed to $target")
+            } catch (e: java.io.IOException) {
+                locked += target
+            }
+        }
+        if (locked.isNotEmpty()) {
+            throw GradleException(
+                "Could not replace the jar in ${locked.joinToString()} - a running client " +
+                    "has it open and will keep the old build until it restarts. Close it and run again."
+            )
         }
     }
 }
