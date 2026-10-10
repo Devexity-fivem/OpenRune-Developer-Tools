@@ -582,6 +582,20 @@ class McpTools
 				args.has("soundId") ? args.get("soundId").getAsInt() : null,
 				optInt(args, "limit", 200))));
 
+		register("get_timeline",
+			"Every recorded channel merged into one tick-ordered stream: scripts, vars, projectiles, effects, chat, combat, experience, containers and sounds. Read this to see what happened around an action, instead of correlating the per-channel history tools by hand.",
+			schema(props(
+				"sinceMs", "integer", "Window in milliseconds looking back from now (default 10000)",
+				"channels", "array", "Only these channels: script, var, projectile, effect, chat, combat, experience, container, sound",
+				"fromTick", "integer", "Only events on or after this game tick",
+				"toTick", "integer", "Only events on or before this game tick",
+				"limit", "integer", "Max events returned, newest kept (default 300)")),
+			args -> textResult(recorder.timeline(
+				optInt(args, "sinceMs", 10000),
+				optStringSet(args, "channels"),
+				args.has("fromTick") ? args.get("fromTick").getAsInt() : null,
+				args.has("toTick") ? args.get("toTick").getAsInt() : null,
+				optInt(args, "limit", 300))));
 
 		// ---- waiting ----
 
@@ -2836,6 +2850,20 @@ class McpTools
 		return args.has(key) ? args.get(key).getAsInt() : def;
 	}
 
+	/** Optional string-array argument, as a set; null when absent so callers read it as "no filter". */
+	private static Set<String> optStringSet(JsonObject args, String key)
+	{
+		if (!args.has(key) || !args.get(key).isJsonArray())
+		{
+			return null;
+		}
+		Set<String> values = new HashSet<>();
+		for (JsonElement element : args.get(key).getAsJsonArray())
+		{
+			values.add(element.getAsString());
+		}
+		return values.isEmpty() ? null : values;
+	}
 
 	private static JsonObject tool(String name, String description, JsonObject inputSchema)
 	{

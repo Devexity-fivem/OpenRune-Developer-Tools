@@ -143,6 +143,11 @@ automatically.
 | `get_container_history` | Item container changes as per-item deltas (was/now/delta) |
 | `get_sound_history` | Sound effects played: id, source actor, scene position for area sounds |
 
+### Timeline
+
+| Tool | Description |
+|---|---|
+| `get_timeline` | Every channel merged into one tick-ordered stream — scripts, vars, projectiles, effects, chat, combat, experience, containers, sounds. Filter by `channels`, `fromTick`/`toTick` |
 
 ### Waiting
 

@@ -41,7 +41,7 @@ import java.util.Set;
  * Rolling history of clientscript invocations, varbit/varp/varc changes, combat,
  * experience, item containers and sounds, recorded from the event bus and queried
  * by the MCP history tools. Every entry carries the game tick and a global sequence
- * number, ready to be merged back into one ordered stream.
+ * number, so {@link #timeline} can merge the buffers back into one ordered stream.
  * Record methods are called on the client thread; queries come from HTTP threads.
  */
 class McpEventRecorder
@@ -484,6 +484,51 @@ class McpEventRecorder
 		result.addProperty("total", matched.size());
 		result.add("events", tail(matched, limit));
 		return result;
+	}
+
+	/** Every buffer merged back into one stream, ordered by the sequence numbers they were stamped with. */
+	synchronized JsonObject timeline(long sinceMs, Set<String> channels, Integer fromTick, Integer toTick,
+		int limit)
+	{
+		long cutoff = System.currentTimeMillis() - sinceMs;
+		List<JsonObject> matched = new ArrayList<>();
+		for (Deque<JsonObject> buffer : allBuffers())
+		{
+			for (JsonObject entry : buffer)
+			{
+				if (entry.get("timeMs").getAsLong() < cutoff)
+				{
+					continue;
+				}
+				if (channels != null && !channels.contains(entry.get("channel").getAsString()))
+				{
+					continue;
+				}
+				int tick = entry.get("tick").getAsInt();
+				if (fromTick != null && tick < fromTick)
+				{
+					continue;
+				}
+				if (toTick != null && tick > toTick)
+				{
+					continue;
+				}
+				matched.add(entry);
+			}
+		}
+		matched.sort((a, b) -> Long.compare(a.get("seq").getAsLong(), b.get("seq").getAsLong()));
+
+		JsonObject result = new JsonObject();
+		result.addProperty("windowMs", sinceMs);
+		result.addProperty("total", matched.size());
+		result.add("events", tail(matched, limit));
+		return result;
+	}
+
+	private List<Deque<JsonObject>> allBuffers()
+	{
+		return List.of(scripts, vars, varcs, projectiles, effects, chat,
+			combat, experience, containers, sounds);
 	}
 
 	private static JsonArray quantityChanges(Map<Integer, Integer> before, Map<Integer, Integer> after)
