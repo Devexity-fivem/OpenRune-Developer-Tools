@@ -40,6 +40,7 @@ import net.runelite.api.ActorSpotAnim;
 import net.runelite.api.Client;
 import net.runelite.api.Hitsplat;
 import net.runelite.api.Item;
+import net.runelite.api.ItemComposition;
 import net.runelite.api.NPC;
 import net.runelite.api.Projectile;
 import net.runelite.api.ScriptEvent;
@@ -298,7 +299,7 @@ public class OpenRuneDevToolsPlugin extends Plugin
 		Map<Integer, Integer> contents = new HashMap<>();
 		for (Item item : event.getItemContainer().getItems())
 		{
-			if (item.getId() != -1)
+			if (item.getId() != -1 && !isPlaceholder(item.getId()))
 			{
 				contents.merge(item.getId(), item.getQuantity(), Integer::sum);
 			}
@@ -352,6 +353,12 @@ public class OpenRuneDevToolsPlugin extends Plugin
 		server = new McpHttpServer(config.port(), new McpTools(client, clientThread, drawManager, recorder));
 		server.start();
 		log.info("MCP server listening on http://127.0.0.1:{}/mcp", config.port());
+	}
+
+	private boolean isPlaceholder(int itemId)
+	{
+		ItemComposition item = client.getItemDefinition(itemId);
+		return item.getPlaceholderTemplateId() != -1;
 	}
 
 	private void stopServer()
