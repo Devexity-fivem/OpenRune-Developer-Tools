@@ -142,6 +142,34 @@ anything by itself.
 | `widget_action` | Right-click any widget and click a menu option (spells, prayers, buttons) |
 | `set_prayer` | Toggle a prayer by name (exact Prayer enum name or fuzzy prayer-book label) via the real prayer-book widget |
 | `invoke_menu_action` | Raw `menuAction` escape hatch with explicit params |
+| `get_menu` | The currently built menu entries with option/target/type/params — inspect before `click_menu_option`, or get real packet fields for `invoke_menu_action` |
+| `use_item` | Use an inventory item on a target (NPC, object, player, another item) — invokes `Use` then the target's `Use item -> target` entry, the same two packets a player sends |
+
+### Economy
+
+| Tool | Description |
+|---|---|
+| `list_shop` | Open shop's stock: slot, itemId, name, stock quantity, per-slot ops (Buy/Value) |
+| `shop_action` | Invoke a shop op directly on a stock item (Buy 1/5/10/50, Value) or an inventory item (`side:"inventory"`, Sell ops) |
+| `get_trade` | Trade screen state: stage (offer/confirm/none), your offer, every item rendered on the trade screen |
+| `trade_action` | `action:"accept"/"decline"` (works on both screens), or offer/remove ops on items via `option` + `side` |
+
+### Session and progression
+
+| Tool | Description |
+|---|---|
+| `list_worlds` | Loaded world list: id, players, activity, location, types, current flag |
+| `hop_world` | Hop to a world id — pair with `wait_for world` or a login-state check |
+| `logout` | Invoke the Logout button on the logout tab interface (must be loaded) |
+| `list_quests` | Every known quest with state NOT_STARTED/IN_PROGRESS/FINISHED; filter by name or state |
+
+### Definitions
+
+| Tool | Description |
+|---|---|
+| `item_def` | Item cache definition: name, note/placeholder links, stackable, members, tradeable, price, inventory ops |
+| `npc_def` | NPC cache definition: name, combat level, actions, size, transform ids |
+| `object_def` | Object cache definition: name, actions, size, impostor/transform ids (varbit-driven forms) |
 
 ### Decision loop (observe → pick → act)
 
@@ -163,9 +191,12 @@ listed — use `item_action`/`invoke_menu_action` for those deliberately.
 | `snapshot_state` | Store a labelled state snapshot (vitals, combat, inventory, equipment, skills, entities) |
 | `diff_state` | Diff live state against a stored snapshot — returns only changed fields |
 | `run_batch` | Execute an ordered list of tool calls in one request, per-step ok/error |
+| `compare_screenshot` | Store a screenshot region as a labelled baseline, then diff later captures — `changedPixels`, `changedPct`, `diffBounds`, `thresholdPct` pass/fail |
 | `get_spawn_history` | NPC spawn/despawn/transform events — boss phase changes, respawn verification |
 | `get_loot_history` | Ground-item spawned/despawned events — deterministic drop-table evidence |
 | `get_overhead_history` | NPC/player overhead text events — phase-change announcements |
+| `get_interface_history` | Interface group opened/closed/unloaded events — proves the server opened a screen |
+| `get_action_history` | Audit trail of menu options the client invoked (option, target, MenuAction type, params) — what the server actually received |
 
 ### Combat extras
 
@@ -183,6 +214,9 @@ listed — use `item_action`/`invoke_menu_action` for those deliberately.
 | `is_walkable` | Collision flags for a world tile — "did the door actually block" |
 | `get_destination` | The tile the player is currently walking to |
 | `search_interfaces` | Find loaded widgets containing a text string |
+| `find_path` | BFS pathfind over the loaded collision map — is a tile reachable, plus the exact tile path |
+| `get_collision_area` | Raw collision-flag grid for a rectangle of the scene, with a walkable map |
+| `set_camera` | Set camera yaw/pitch targets for deterministic screenshots |
 
 ### Dialogue
 
@@ -199,7 +233,7 @@ listed — use `item_action`/`invoke_menu_action` for those deliberately.
 |---|---|
 | `get_script_history` | Clientscripts fired recently: per-script counts + events with tick and args |
 | `get_var_history` | Varbit/varp/varc changes with old/new values, tick, timestamp |
-| `get_var` | Current value of a varbit, varp, varc int or varc string |
+| `get_var` | Current value of a varbit, varp, varc int or varc string; varp/varbit also report `serverValue` — the last value the server sent, so client-side overrides are visible |
 | `get_projectile_history` | Projectiles launched recently, one entry each, with values and target |
 | `get_effect_history` | Animations and graphics played by NPCs/players recently |
 | `get_chat_history` | Chatbox messages: type, sender, message, tick, timestamp |
@@ -212,13 +246,13 @@ listed — use `item_action`/`invoke_menu_action` for those deliberately.
 
 | Tool | Description |
 |---|---|
-| `get_timeline` | Every channel merged into one tick-ordered stream — scripts, vars, projectiles, effects, chat, combat, experience, containers, sounds. Scripts are left out unless requested. Filter by `channels`, `fromTick`/`toTick` |
+| `get_timeline` | Every channel merged into one tick-ordered stream — vars, projectiles, effects, chat, combat, experience, containers, sounds, interfaces, actions, spawns, loot, overheads. Scripts are left out unless requested. Filter by `channels`, `fromTick`/`toTick` |
 
 ### Waiting
 
 | Tool | Description |
 |---|---|
-| `wait_for` | Block until a condition: idle, at_tile, npc_dead, dialogue, interface_open/closed, chat_message, hitsplat, projectile, animation, spotanim, var, in_combat/out_of_combat, prayer, ticks, spawn/despawn/transform, loot, overhead — checked every 100ms, returns immediately when met. Event-based conditions only see new events after the call starts |
+| `wait_for` | Block until a condition: idle, at_tile, npc_dead, dialogue, interface_open/closed, chat_message, hitsplat, projectile, animation, spotanim, var, in_combat/out_of_combat, prayer, ticks, spawn/despawn/transform, loot, overhead, xp, container, action, world — checked every 100ms, returns immediately when met. Event-based conditions only see new events after the call starts |
 
 All history tools report a `dropped` count — how many events were evicted from
 the bounded buffer — so truncation is visible instead of silent.

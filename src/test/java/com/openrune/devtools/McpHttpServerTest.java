@@ -158,7 +158,13 @@ class McpHttpServerTest
 			"get_special_attack", "toggle_special_attack",
 			"get_attack_style", "set_attack_style", "cast_spell", "list_spells",
 			"is_walkable", "get_destination", "search_interfaces", "bank_action",
-			"get_spawn_history", "get_loot_history", "get_overhead_history"})
+			"get_spawn_history", "get_loot_history", "get_overhead_history",
+			"get_interface_history", "get_action_history", "get_menu",
+			"list_shop", "shop_action", "get_trade", "trade_action",
+			"list_worlds", "hop_world", "logout", "list_quests",
+			"item_def", "npc_def", "object_def",
+			"find_path", "get_collision_area", "set_camera",
+			"use_item", "compare_screenshot"})
 		{
 			assertTrue(names.contains(expected), "missing tool " + expected);
 		}

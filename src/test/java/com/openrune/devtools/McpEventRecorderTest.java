@@ -193,6 +193,42 @@ class McpEventRecorderTest
 	}
 
 	@Test
+	void interfaceHistoryRecordsOpensAndCloses()
+	{
+		recorder.recordInterface("opened", 300, 10);
+		recorder.recordInterface("opened", 335, 11);
+		recorder.recordInterface("closed", 300, 20);
+		assertEquals(3, recorder.interfaceHistory(60_000, null, null, 100).get("total").getAsInt());
+		assertEquals(2, recorder.interfaceHistory(60_000, 300, null, 100).get("total").getAsInt());
+		assertEquals(1, recorder.interfaceHistory(60_000, null, "closed", 100).get("total").getAsInt());
+	}
+
+	@Test
+	void actionHistoryRecordsAndFiltersMenuInvocations()
+	{
+		recorder.recordAction("Talk-to", "Man", "NPC_FIRST_OPTION", 0, 0, 42, -1, 10);
+		recorder.recordAction("Walk here", "", "WALK", 10, 10, 0, -1, 11);
+		recorder.recordAction("Use", "<col=ff9040>Shark</col> -> <col=ffff>Door", "ITEM_USE_ON_GAME_OBJECT", 51, 50, 1535, 385, 12);
+		assertEquals(3, recorder.actionHistory(60_000, null, 100).get("total").getAsInt());
+		assertEquals(1, recorder.actionHistory(60_000, "walk", 100).get("total").getAsInt());
+		assertEquals(1, recorder.actionHistory(60_000, "door", 100).get("total").getAsInt());
+		var use = recorder.actionHistory(60_000, "use_on", 1)
+			.getAsJsonArray("events").get(0).getAsJsonObject();
+		assertEquals(385, use.get("itemId").getAsInt());
+		assertFalse(use.get("target").getAsString().contains("<col"));
+	}
+
+	@Test
+	void resetClearsNewChannels()
+	{
+		recorder.recordInterface("opened", 300, 1);
+		recorder.recordAction("Walk here", "", "WALK", 1, 2, 0, -1, 2);
+		recorder.reset();
+		assertEquals(0, recorder.interfaceHistory(60_000, null, null, 100).get("total").getAsInt());
+		assertEquals(0, recorder.actionHistory(60_000, null, 100).get("total").getAsInt());
+	}
+
+	@Test
 	void scriptArgsAreTruncated()
 	{
 		Object[] args = new Object[200];

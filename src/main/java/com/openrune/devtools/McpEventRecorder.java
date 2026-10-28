@@ -36,6 +36,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import net.runelite.client.util.Text;
 
 /**
  * Rolling history of clientscript invocations, varbit/varp/varc changes, combat,
@@ -59,6 +60,8 @@ class McpEventRecorder
 	private static final int SPAWN_BUFFER = 1000;
 	private static final int LOOT_BUFFER = 1000;
 	private static final int OVERHEAD_BUFFER = 500;
+	private static final int INTERFACE_BUFFER = 1000;
+	private static final int ACTION_BUFFER = 1000;
 	private static final int MAX_ARGS_LENGTH = 160;
 	private static final int MAX_COUNT_ROWS = 50;
 
@@ -75,6 +78,8 @@ class McpEventRecorder
 	private final Deque<JsonObject> spawns = new ArrayDeque<>();
 	private final Deque<JsonObject> loot = new ArrayDeque<>();
 	private final Deque<JsonObject> overheads = new ArrayDeque<>();
+	private final Deque<JsonObject> interfaces = new ArrayDeque<>();
+	private final Deque<JsonObject> actions = new ArrayDeque<>();
 	private final Map<String, Integer> lastIntValues = new HashMap<>();
 	private final Map<Integer, String> lastStrValues = new HashMap<>();
 	private final Map<String, Integer> lastSkillXp = new HashMap<>();
@@ -109,6 +114,8 @@ class McpEventRecorder
 		spawns.clear();
 		loot.clear();
 		overheads.clear();
+		interfaces.clear();
+		actions.clear();
 		droppedByChannel.clear();
 		lastHitOnMeTick = -1;
 		lastMyHitTick = -1;
@@ -384,6 +391,39 @@ class McpEventRecorder
 		push(overheads, OVERHEAD_BUFFER, entry);
 	}
 
+	/** Interface (widget group) load/close events — proves the server opened or closed a screen. */
+	synchronized void recordInterface(String kind, int groupId, int tick)
+	{
+		JsonObject entry = baseEntry("interface", tick);
+		entry.addProperty("kind", kind);
+		entry.addProperty("groupId", groupId);
+		push(interfaces, INTERFACE_BUFFER, entry);
+	}
+
+	/**
+	 * Menu options the client actually invoked (MenuOptionClicked) — the audit trail of
+	 * what packet left the client: option, target, MenuAction type and raw params.
+	 */
+	synchronized void recordAction(String option, String target, String type,
+		int param0, int param1, int identifier, int itemId, int tick)
+	{
+		JsonObject entry = baseEntry("action", tick);
+		entry.addProperty("option", option);
+		if (target != null && !target.isEmpty())
+		{
+			entry.addProperty("target", Text.removeTags(target));
+		}
+		entry.addProperty("type", type);
+		entry.addProperty("param0", param0);
+		entry.addProperty("param1", param1);
+		entry.addProperty("identifier", identifier);
+		if (itemId > 0)
+		{
+			entry.addProperty("itemId", itemId);
+		}
+		push(actions, ACTION_BUFFER, entry);
+	}
+
 	synchronized JsonObject spawnHistory(long sinceMs, String kind, String nameFilter, int limit)
 	{
 		long cutoff = System.currentTimeMillis() - sinceMs;
@@ -470,6 +510,65 @@ class McpEventRecorder
 		result.addProperty("windowMs", sinceMs);
 		result.addProperty("total", matched.size());
 		result.addProperty("dropped", droppedFor("overhead"));
+		result.add("events", tail(matched, limit));
+		return result;
+	}
+
+	synchronized JsonObject interfaceHistory(long sinceMs, Integer groupId, String kind, int limit)
+	{
+		long cutoff = System.currentTimeMillis() - sinceMs;
+		List<JsonObject> matched = new ArrayList<>();
+		for (JsonObject entry : interfaces)
+		{
+			if (entry.get("timeMs").getAsLong() < cutoff)
+			{
+				continue;
+			}
+			if (groupId != null && entry.get("groupId").getAsInt() != groupId)
+			{
+				continue;
+			}
+			if (kind != null && !kind.equalsIgnoreCase(entry.get("kind").getAsString()))
+			{
+				continue;
+			}
+			matched.add(entry);
+		}
+		JsonObject result = new JsonObject();
+		result.addProperty("windowMs", sinceMs);
+		result.addProperty("total", matched.size());
+		result.addProperty("dropped", droppedFor("interface"));
+		result.add("events", tail(matched, limit));
+		return result;
+	}
+
+	synchronized JsonObject actionHistory(long sinceMs, String filter, int limit)
+	{
+		long cutoff = System.currentTimeMillis() - sinceMs;
+		String needle = filter != null ? filter.toLowerCase() : null;
+		List<JsonObject> matched = new ArrayList<>();
+		for (JsonObject entry : actions)
+		{
+			if (entry.get("timeMs").getAsLong() < cutoff)
+			{
+				continue;
+			}
+			if (needle != null)
+			{
+				String option = entry.has("option") ? entry.get("option").getAsString().toLowerCase() : "";
+				String target = entry.has("target") ? entry.get("target").getAsString().toLowerCase() : "";
+				String type = entry.get("type").getAsString().toLowerCase();
+				if (!option.contains(needle) && !target.contains(needle) && !type.contains(needle))
+				{
+					continue;
+				}
+			}
+			matched.add(entry);
+		}
+		JsonObject result = new JsonObject();
+		result.addProperty("windowMs", sinceMs);
+		result.addProperty("total", matched.size());
+		result.addProperty("dropped", droppedFor("action"));
 		result.add("events", tail(matched, limit));
 		return result;
 	}
@@ -773,7 +872,8 @@ class McpEventRecorder
 	private List<Deque<JsonObject>> allBuffers()
 	{
 		return List.of(scripts, vars, varcs, projectiles, effects, chat,
-			combat, experience, containers, sounds, spawns, loot, overheads);
+			combat, experience, containers, sounds, spawns, loot, overheads,
+			interfaces, actions);
 	}
 
 	private static JsonArray quantityChanges(Map<Integer, Integer> before, Map<Integer, Integer> after)

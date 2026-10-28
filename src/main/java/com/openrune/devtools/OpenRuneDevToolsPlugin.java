@@ -57,6 +57,7 @@ import net.runelite.api.events.HitsplatApplied;
 import net.runelite.api.events.ItemContainerChanged;
 import net.runelite.api.events.ItemDespawned;
 import net.runelite.api.events.ItemSpawned;
+import net.runelite.api.events.MenuOptionClicked;
 import net.runelite.api.events.NpcChanged;
 import net.runelite.api.events.NpcDespawned;
 import net.runelite.api.events.NpcSpawned;
@@ -69,6 +70,8 @@ import net.runelite.api.events.StatChanged;
 import net.runelite.api.events.VarClientIntChanged;
 import net.runelite.api.events.VarClientStrChanged;
 import net.runelite.api.events.VarbitChanged;
+import net.runelite.api.events.WidgetClosed;
+import net.runelite.api.events.WidgetLoaded;
 import net.runelite.client.callback.ClientThread;
 import okhttp3.OkHttpClient;
 import net.runelite.client.config.ConfigManager;
@@ -413,6 +416,37 @@ public class OpenRuneDevToolsPlugin extends Plugin
 		Actor source = event.getSource();
 		recorder.recordSound("areaSound", event.getSoundId(), event.getSceneX(), event.getSceneY(),
 			source != null ? source.getName() : null, client.getTickCount());
+	}
+
+	@Subscribe
+	public void onWidgetLoaded(WidgetLoaded event)
+	{
+		if (recorder != null)
+		{
+			recorder.recordInterface("opened", event.getGroupId(), client.getTickCount());
+		}
+	}
+
+	@Subscribe
+	public void onWidgetClosed(WidgetClosed event)
+	{
+		if (recorder != null)
+		{
+			recorder.recordInterface(event.isUnload() ? "unloaded" : "closed",
+				event.getGroupId(), client.getTickCount());
+		}
+	}
+
+	@Subscribe
+	public void onMenuOptionClicked(MenuOptionClicked event)
+	{
+		// Audit trail of every packet the client sends: which tool/user action produced it.
+		if (recorder != null)
+		{
+			recorder.recordAction(event.getMenuOption(), event.getMenuTarget(),
+				event.getMenuAction().name(), event.getParam0(), event.getParam1(),
+				event.getId(), event.getItemId(), client.getTickCount());
+		}
 	}
 
 	@Subscribe

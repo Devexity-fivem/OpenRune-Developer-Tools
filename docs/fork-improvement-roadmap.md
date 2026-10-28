@@ -178,12 +178,13 @@ All changes on `devexity-mcp-improvements`, version bumped to `0.2.0`.
 
 ### Deferred
 
-- Shop/trade-specific tools (`shop_action`, `trade_action`), world hop/logout,
-  quest-var mapping, screenshot pixel-diff — worthwhile but not yet justified.
 - `enter_input` in `list_actions` menus for non-dialogue input prompts beyond
   the observed `input` type.
 - Rate limiting on `/mcp` (loopback-only threat model judged sufficient).
 - Splitting `McpTools.java` — still one registry; no correctness benefit shown.
+- Grand Exchange offer tools (GE not present on most RSPS targets).
+- `use_item` on-targets require the target to be hoverable on canvas; off-screen
+  targets still need `invoke_menu_action` by hand.
 
 ## 5b. Second batch (post-`fb9d9af`)
 
@@ -207,9 +208,47 @@ Additional tools implemented for OpenRune Server testing:
 - 7 new recorder tests (35 total, all green); tool-list test covers all 68
   tools.
 
+## 5c. Third batch (89 tools)
+
+Full capability build-out — the previously deferred items plus new
+evidence/inspection tooling.
+
+- **New recorder channels**: `interface` (WidgetLoaded/WidgetClosed/Unload
+  events — proves the server opened/closed a screen) and `action`
+  (MenuOptionClicked — audit trail of every menu packet the client invoked,
+  with option/target/MenuAction/param0/param1/identifier/itemId). Both merge
+  into `get_timeline` (now default channels), clear on `reset()`, and expose
+  `get_interface_history` / `get_action_history`.
+- **Economy**: `list_shop` (stock widgets + ops), `shop_action` (buy/sell ops
+  via shared `itemSlotAction`, works with Shopside sell side), `get_trade`
+  (stage + TRADEOFFER container + all rendered item widgets), `trade_action`
+  (accept/decline on both trade screens, offer/remove item ops).
+- **Session**: `list_worlds`, `hop_world` (`client.hopToWorld`), `logout`
+  (Logout-group widget scan), `list_quests` (full Quest enum + state filter).
+- **Definitions**: `item_def`, `npc_def`, `object_def` — cache ground truth
+  (names, actions, combat level, transform/impostor ids).
+- **Movement**: `find_path` (BFS over collision flags → reachability + exact
+  tile path), `get_collision_area` (raw flag grid + walkable ASCII map),
+  `set_camera` (yaw/pitch targets for deterministic screenshots).
+- **`use_item`**: invokes the item's `Use` op then the target's
+  `Use item -> target` menu entry — the same two packets a player sends.
+  Targets: NPC, object by id+x/y, player, another inventory item.
+- **`compare_screenshot`**: labelled pixel baselines (8 max, ≤1 MP each, LRU)
+  → `changedPixels`/`changedPct`/`diffBounds`/`thresholdPct` pass-fail.
+  `screenshot`/`compare_screenshot` share `resolveCrop`.
+- **`get_menu`**: current menu entries with param0/param1/identifier/itemId
+  (enriched `menuEntriesJson`, also improves error dumps).
+- **`get_var`**: +`serverValue` for varp/varbit — the last server-sent value,
+  so client-side overrides are visible.
+- **`wait_for`**: +`xp` (skill xp gained ≥ amount), `container` (item count
+  change in a container), `action` (menu packet fired matching filter),
+  `world` (world id changed — pairs with `hop_world`).
+- Refactor: `bankAction`/`shop_action`/`trade_action` share `itemSlotAction`.
+
 ## 6. Test matrix
 
-`./gradlew build -x jar` → **28 tests, all green** (JDK 21 toolchain, Java 11 target).
+`./gradlew build` → **34 tests, all green** (JDK 21 toolchain, Java 11 target).
+The tool-list test now asserts all batch-1/2/3 tool names.
 
 - `McpEventRecorderTest` (11): var dedupe + oldValue, buffer cap + `dropped`
   accounting, newest-first limits, chat filters, combat-tick separation,

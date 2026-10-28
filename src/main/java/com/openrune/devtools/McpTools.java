@@ -26,6 +26,7 @@ package com.openrune.devtools;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
+import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import java.awt.Canvas;
 import java.awt.Graphics2D;
@@ -43,6 +44,7 @@ import java.io.IOException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.Deque;
 import java.util.HashMap;
@@ -82,11 +84,13 @@ import net.runelite.api.Perspective;
 import net.runelite.api.Player;
 import net.runelite.api.Prayer;
 import net.runelite.api.Projectile;
+import net.runelite.api.Quest;
 import net.runelite.api.Scene;
 import net.runelite.api.Skill;
 import net.runelite.api.Tile;
 import net.runelite.api.TileItem;
 import net.runelite.api.TileObject;
+import net.runelite.api.World;
 import net.runelite.api.VarPlayer;
 import net.runelite.api.WallObject;
 import net.runelite.api.gameval.InterfaceID;
@@ -111,7 +115,8 @@ class McpTools
 	private static final int MAX_COMPONENTS_PER_INTERFACE = 2048;
 	private static final int COMPONENT_SCAN_GAP = 64;
 	private static final Set<String> DEFAULT_TIMELINE_CHANNELS = Set.of(
-		"var", "projectile", "effect", "chat", "combat", "experience", "container", "sound");
+		"var", "projectile", "effect", "chat", "combat", "experience", "container", "sound",
+		"interface", "action");
 
 	private final Client client;
 	private final ClientThread clientThread;
@@ -820,10 +825,193 @@ class McpTools
 				args.has("nameFilter") ? args.get("nameFilter").getAsString() : null,
 				optInt(args, "limit", 100))));
 
+		register("get_interface_history",
+			"Interface (widget group) load/close events in a recent window — proves the server opened or closed a screen, with the game tick it happened on.",
+			schema(props(
+				"sinceMs", "integer", "Window in ms (default 60000)",
+				"groupId", "integer", "Only this interface (group) id",
+				"kind", "string", "opened, closed or unloaded",
+				"limit", "integer", "Max events (default 100)")),
+			args -> textResult(recorder.interfaceHistory(
+				optInt(args, "sinceMs", 60_000),
+				args.has("groupId") ? args.get("groupId").getAsInt() : null,
+				args.has("kind") ? args.get("kind").getAsString() : null,
+				optInt(args, "limit", 100))));
+
+		register("get_action_history",
+			"Audit trail of menu options the client actually invoked (walks, clicks, tool calls): option, target, MenuAction type and raw param0/param1/identifier. This is what the server received - use it to verify a tool sent the packet you expected.",
+			schema(props(
+				"sinceMs", "integer", "Window in ms (default 60000)",
+				"filter", "string", "Matches option, target or MenuAction type",
+				"limit", "integer", "Max events (default 100)")),
+			args -> textResult(recorder.actionHistory(
+				optInt(args, "sinceMs", 60_000),
+				args.has("filter") ? args.get("filter").getAsString() : null,
+				optInt(args, "limit", 100))));
+
+		register("get_menu",
+			"The menu entries currently built (whatever was hovered last): option, target, MenuAction type and raw params. Inspect before click_menu_option, or to see the real packet fields for invoke_menu_action.",
+			schema(props()),
+			args -> textResult(onClientThread(() ->
+			{
+				JsonObject result = new JsonObject();
+				result.add("entries", menuEntriesJson());
+				return result;
+			})));
+
+		// ---- economy interfaces ----
+
+		register("list_shop",
+			"Items on the open shop's stock widget: slot, itemId, name, stock quantity and the ops each slot offers (Value, Buy 1/5/10/50...). Errors when no shop is open.",
+			schema(props()),
+			args -> textResult(listShop()));
+
+		register("shop_action",
+			"Invoke a shop op directly on a stock item (Buy 1/5/10/50, Value) or on an inventory item shown for selling via side:'inventory' (Sell 1/5/10/50) - shop must be open.",
+			schema(props(
+				"option", "string", "Op name, e.g. 'Buy 1', 'Sell 5', 'Value'",
+				"itemId", "integer", "Item id",
+				"itemName", "string", "Name substring (alternative to itemId)",
+				"side", "string", "shop (default, buy side) or inventory (sell side)"),
+				"option"),
+			args -> textResult(itemSlotAction(args,
+				args.has("side") && "inventory".equalsIgnoreCase(args.get("side").getAsString())
+					? InterfaceID.Shopside.ITEMS : InterfaceID.Shopmain.ITEMS,
+				"Shop is not open",
+				args.has("side") && "inventory".equalsIgnoreCase(args.get("side").getAsString())
+					? "inventory" : "shop")));
+
+		register("get_trade",
+			"Trade screen state: stage (offer/confirm/none), your offered items from the trade container, and every item widget rendered on the trade screen grouped by parent (the partner's offer shows on their side).",
+			schema(props()),
+			args -> textResult(getTrade()));
+
+		register("trade_action",
+			"Invoke a trade op: action 'accept'/'decline' clicks the screen's button (works on the confirm screen too), or offer/remove ops on items - itemId|itemName + option ('Offer-1','Offer-10','Remove-All') + side 'inventory' (offer, default) or 'offer' (remove).",
+			schema(props(
+				"action", "string", "accept or decline (alternative to option+item)",
+				"option", "string", "Item op, e.g. 'Offer-1', 'Offer-All', 'Remove-5'",
+				"itemId", "integer", "Item id",
+				"itemName", "string", "Name substring (alternative to itemId)",
+				"side", "string", "inventory (default, offer side) or offer (remove side)")),
+			args -> textResult(tradeAction(args)));
+
+		// ---- session ----
+
+		register("list_worlds",
+			"The world list the client loaded: id, player count, activity, location, types, and which is current. Needed before hop_world.",
+			schema(props()),
+			args -> textResult(listWorlds()));
+
+		register("hop_world",
+			"Hop to a world id from list_worlds. The client logs out and reconnects - follow with wait_for world or login state.",
+			schema(props(
+				"world", "integer", "World id to hop to"),
+				"world"),
+			args -> textResult(hopWorld(args)));
+
+		register("logout",
+			"Invoke the Logout button on the logout tab interface. The logout interface must be loaded - if not loaded this errors; open the logout tab in the client first (or use press_key with the client's logout hotkey if configured).",
+			schema(props()),
+			args -> textResult(logout()));
+
+		register("list_quests",
+			"Every quest known to the client with its state: NOT_STARTED, IN_PROGRESS or FINISHED. Filter by name substring or state.",
+			schema(props(
+				"nameFilter", "string", "Quest name substring",
+				"state", "string", "NOT_STARTED, IN_PROGRESS or FINISHED")),
+			args -> textResult(listQuests(args)));
+
+		// ---- definition inspectors ----
+
+		register("item_def",
+			"Item definition from the cache: name, note/placeholder links, stackable, members, tradeable, store price and inventory options - the ground truth for what an item id is.",
+			schema(props(
+				"id", "integer", "Item id"),
+				"id"),
+			args -> textResult(itemDef(args)));
+
+		register("npc_def",
+			"NPC definition from the cache: name, combat level, menu actions, size and transform ids (varbit-driven forms).",
+			schema(props(
+				"id", "integer", "NPC id"),
+				"id"),
+			args -> textResult(npcDef(args)));
+
+		register("object_def",
+			"Object definition from the cache: name, menu actions, size and impostor/transform ids (objects that swap form by varbit, like doors and farming patches).",
+			schema(props(
+				"id", "integer", "Object id"),
+				"id"),
+			args -> textResult(objectDef(args)));
+
+		// ---- movement / collision ----
+
+		register("find_path",
+			"BFS pathfind over the loaded collision map to a world tile: returns whether it's reachable plus the exact tile path. Answers 'can the player actually get there' without walking.",
+			schema(props(
+				"x", "integer", "Target world x",
+				"y", "integer", "Target world y",
+				"plane", "integer", "Plane (default current)",
+				"fromX", "integer", "Start world x (default player)",
+				"fromY", "integer", "Start world y (default player)",
+				"maxPath", "integer", "Return at most this many path tiles (default 200)"),
+				"x", "y"),
+			args -> textResult(findPath(args)));
+
+		register("get_collision_area",
+			"Raw collision flags for a rectangle of the loaded scene - the grid walls/doors/blockers live in. Row-major [y][x] in world coordinates, with per-tile walkable/decode.",
+			schema(props(
+				"x", "integer", "Rectangle origin world x (south-west)",
+				"y", "integer", "Rectangle origin world y",
+				"width", "integer", "Tiles wide (default 8, max 32)",
+				"height", "integer", "Tiles tall (default 8, max 32)",
+				"plane", "integer", "Plane (default current)"),
+				"x", "y"),
+			args -> textResult(getCollisionArea(args)));
+
+		register("set_camera",
+			"Point the camera: yaw and pitch targets for deterministic screenshots of the same scene.",
+			schema(props(
+				"yaw", "integer", "Camera yaw target 0-2047 (0 = south, 512 = west, 1024 = north, 1536 = east)",
+				"pitch", "integer", "Camera pitch target 128-383 (lower = steeper overhead view)")),
+			args -> textResult(setCamera(args)));
+
+		// ---- item-on-target ----
+
+		register("use_item",
+			"Use an inventory item on something: 'Use' is invoked on the item, then the target's 'Use item -> target' menu entry is clicked (the same two packets a player sends). Targets: npc (npcIndex|npcName), object (objectId+x+y), player (playerName), or another inventory item (targetItemId|targetItemName). For quests, crafting, keys-on-doors.",
+			schema(props(
+				"itemId", "integer", "Item id in the inventory",
+				"itemName", "string", "Item name substring (alternative)",
+				"npcIndex", "integer", "Use on NPC index (from list_npcs)",
+				"npcName", "string", "Use on nearest matching NPC name",
+				"objectId", "integer", "Use on object id",
+				"x", "integer", "Object world x",
+				"y", "integer", "Object world y",
+				"playerName", "string", "Use on player name substring",
+				"targetItemId", "integer", "Use on this inventory item id (item-on-item)",
+				"targetItemName", "string", "Use on this inventory item name")),
+			args -> useItem(args));
+
+		register("compare_screenshot",
+			"Screenshot diffing for rendering regressions: first call with a label stores the region as the baseline; later calls diff against it and report changedPixels, percent and a bounding box. Same crop args as screenshot (componentId/childIndex, interfaceId, or x/y/width/height - defaults to full canvas). thresholdPct makes 'match' a pass/fail gate.",
+			schema(props(
+				"label", "string", "Baseline name (default 'default')",
+				"componentId", "integer", "Crop to widget (see screenshot)",
+				"childIndex", "integer", "Dynamic child of componentId",
+				"interfaceId", "integer", "Crop to interface",
+				"x", "integer", "Region x", "y", "integer", "Region y",
+				"width", "integer", "Region width", "height", "integer", "Region height",
+				"padding", "integer", "Padding around widget/interface crop",
+				"thresholdPct", "number", "match=true when changedPct <= this (default 0)",
+				"rebaseline", "boolean", "Overwrite the stored baseline instead of comparing")),
+			args -> compareScreenshot(args));
+
 		register("wait_for",
 			"Block until a game condition is met, checked every 100ms - returns the moment it happens. Use this after walk_to/interact/attack instead of taking screenshots or guessing delays. Event-based conditions only see NEW events since the call started. Returns met:false with current state on timeout.",
 			schema(props(
-				"condition", "string", "What to wait for: idle, at_tile, npc_dead, dialogue, interface_open / interface_closed, chat_message, hitsplat, projectile, animation, spotanim, var, in_combat / out_of_combat, prayer, ticks, spawn / despawn / transform, loot, overhead",
+				"condition", "string", "What to wait for: idle, at_tile, npc_dead, dialogue, interface_open / interface_closed, chat_message, hitsplat, projectile, animation, spotanim, var, in_combat / out_of_combat, prayer, ticks, spawn / despawn / transform, loot, overhead, xp, container, action, world",
 				"timeoutMs", "integer", "Give up after this long (default 10000, max 60000)",
 				"x", "integer", "at_tile: world x",
 				"y", "integer", "at_tile: world y",
@@ -839,7 +1027,12 @@ class McpTools
 				"id", "integer", "var: varbit/varp/varc id",
 				"value", "integer", "var: value to wait for (exact match)",
 				"prayer", "string", "prayer: Prayer enum name, e.g. PROTECT_FROM_MAGIC",
-				"on", "boolean", "prayer: wait for active (default true) or inactive"),
+				"on", "boolean", "prayer: wait for active (default true) or inactive",
+				"skill", "string", "xp: skill name, e.g. ATTACK",
+				"amount", "integer", "xp: xp gained to wait for (default 1)",
+				"containerId", "integer", "container: item container id (default 93 inventory)",
+				"itemId", "integer", "container: item id whose count change to wait for",
+				"filter", "string", "action: matches option/target/MenuAction type"),
 				"condition"),
 			this::waitFor);
 	}
@@ -859,38 +1052,7 @@ class McpTools
 
 	private JsonObject screenshot(JsonObject args) throws Exception
 	{
-		Rectangle crop = null;
-		if (args.has("componentId"))
-		{
-			int padding = optInt(args, "padding", 0);
-			Rectangle bounds = onClientThread(() ->
-			{
-				Widget w = resolveWidget(args, "componentId", "childIndex");
-				return w == null || w.isHidden() ? null : w.getBounds();
-			});
-			if (bounds == null)
-			{
-				throw new IllegalArgumentException("Widget not found or hidden: " + describeId(args, "componentId", "childIndex"));
-			}
-			crop = pad(bounds, padding);
-		}
-		else if (args.has("interfaceId"))
-		{
-			int interfaceId = args.get("interfaceId").getAsInt();
-			int padding = optInt(args, "padding", 0);
-			Rectangle bounds = onClientThread(() -> interfaceBounds(interfaceId));
-			if (bounds == null)
-			{
-				throw new IllegalArgumentException("Interface " + interfaceId + " is not loaded or has no visible components");
-			}
-			crop = pad(bounds, padding);
-		}
-		else if (args.has("x") && args.has("y") && args.has("width") && args.has("height"))
-		{
-			crop = new Rectangle(args.get("x").getAsInt(), args.get("y").getAsInt(),
-				args.get("width").getAsInt(), args.get("height").getAsInt());
-		}
-
+		Rectangle crop = resolveCrop(args);
 		BufferedImage frame = captureFrame();
 		if (crop != null)
 		{
@@ -2054,6 +2216,12 @@ class McpTools
 			o.addProperty("target", entry.getTarget());
 			o.addProperty("type", entry.getType().name());
 			o.addProperty("identifier", entry.getIdentifier());
+			o.addProperty("param0", entry.getParam0());
+			o.addProperty("param1", entry.getParam1());
+			if (entry.getItemId() > 0)
+			{
+				o.addProperty("itemId", entry.getItemId());
+			}
 			arr.add(o);
 		}
 		return arr;
@@ -2179,9 +2347,11 @@ class McpTools
 			{
 				case "varbit":
 					o.addProperty("value", client.getVarbitValue(id));
+					o.addProperty("serverValue", client.getServerVarbitValue(id));
 					break;
 				case "varp":
 					o.addProperty("value", client.getVarpValue(id));
+					o.addProperty("serverValue", client.getServerVarpValue(id));
 					break;
 				case "varcint":
 					o.addProperty("value", client.getVarcIntValue(id));
@@ -3744,20 +3914,177 @@ class McpTools
 
 	private JsonObject bankAction(JsonObject args) throws Exception
 	{
+		boolean depositSide = args.has("side") && "inventory".equalsIgnoreCase(args.get("side").getAsString());
+		return itemSlotAction(args,
+			depositSide ? InterfaceID.Bankside.ITEMS : InterfaceID.Bankmain.ITEMS,
+			"Bank is not open",
+			depositSide ? "inventory" : "bank");
+	}
+
+	/**
+	 * Invoke an op on an item widget inside a container widget (bank, shop, trade panels):
+	 * the same CC_OP the client sends, no hover or mouse. Runs on the client thread.
+	 */
+	private JsonObject itemSlotAction(JsonObject args, int containerWidget, String notOpenError,
+		String sideLabel) throws Exception
+	{
 		String option = args.get("option").getAsString();
 		Integer itemId = args.has("itemId") ? args.get("itemId").getAsInt() : null;
 		String itemName = args.has("itemName") ? args.get("itemName").getAsString().toLowerCase() : null;
-		boolean depositSide = args.has("side") && "inventory".equalsIgnoreCase(args.get("side").getAsString());
-		int containerWidget = depositSide ? InterfaceID.Bankside.ITEMS : InterfaceID.Bankmain.ITEMS;
 		return onClientThread(() ->
 		{
 			Widget container = client.getWidget(containerWidget);
 			if (container == null || container.isHidden())
 			{
-				throw new IllegalStateException("Bank is not open (widget "
-					+ (depositSide ? "Bankside" : "Bankmain") + ".ITEMS not visible)");
+				throw new IllegalStateException(notOpenError + " (widget "
+					+ (containerWidget >>> 16) + " not visible)");
 			}
-			Widget[] slots = container.getDynamicChildren();
+			Widget slot = findItemSlot(container, itemId, itemName);
+			if (slot == null)
+			{
+				throw new IllegalArgumentException("Item not found on the " + sideLabel + " side: "
+					+ (itemId != null ? "id " + itemId : itemName));
+			}
+			String[] ops = slot.getActions();
+			for (int i = 0; ops != null && i < ops.length; i++)
+			{
+				if (ops[i] != null && Text.removeTags(ops[i]).equalsIgnoreCase(option))
+				{
+					client.menuAction(slot.getIndex(), containerWidget,
+						i < 5 ? MenuAction.CC_OP : MenuAction.CC_OP_LOW_PRIORITY, i + 1,
+						slot.getItemId(), ops[i], slot.getName());
+					JsonObject result = new JsonObject();
+					result.addProperty("invoked", ops[i]);
+					result.addProperty("slot", slot.getIndex());
+					result.addProperty("itemId", slot.getItemId());
+					result.addProperty("side", sideLabel);
+					return result;
+				}
+			}
+			throw new IllegalArgumentException("Item has no '" + option
+				+ "' op. Available: " + availableActions(ops));
+		});
+	}
+
+	/** First dynamic child of container carrying itemId/itemName; must be on the client thread. */
+	private Widget findItemSlot(Widget container, Integer itemId, String itemName)
+	{
+		Widget[] slots = container.getDynamicChildren();
+		if (slots == null)
+		{
+			return null;
+		}
+		for (Widget slot : slots)
+		{
+			if (slot == null || slot.getItemId() <= 0)
+			{
+				continue;
+			}
+			if (itemId != null && slot.getItemId() != itemId)
+			{
+				continue;
+			}
+			if (itemName != null)
+			{
+				ItemComposition composition = client.getItemDefinition(slot.getItemId());
+				String name = composition != null ? composition.getName() : null;
+				if (name == null || !name.toLowerCase().contains(itemName))
+				{
+					continue;
+				}
+			}
+			return slot;
+		}
+		return null;
+	}
+
+	/**
+	 * All widgets in an interface group that render an item (itemId > 0),
+	 * grouped for reporting. Must be on the client thread.
+	 */
+	private JsonArray itemWidgetsInGroup(int groupId)
+	{
+		JsonArray groups = new JsonArray();
+		for (int child = 0; child < MAX_COMPONENTS_PER_INTERFACE; child++)
+		{
+			Widget w = client.getWidget(WidgetUtil.packComponentId(groupId, child));
+			if (w == null)
+			{
+				continue;
+			}
+			JsonObject group = new JsonObject();
+			group.addProperty("componentId", w.getId());
+			JsonArray items = new JsonArray();
+			collectItemWidgets(w, items);
+			if (items.size() > 0)
+			{
+				group.add("items", items);
+				groups.add(group);
+			}
+		}
+		return groups;
+	}
+
+	private void collectItemWidgets(Widget parent, JsonArray out)
+	{
+		if (parent == null || parent.isHidden())
+		{
+			return;
+		}
+		if (parent.getItemId() > 0)
+		{
+			JsonObject o = new JsonObject();
+			o.addProperty("widgetId", parent.getId());
+			o.addProperty("slot", parent.getIndex());
+			o.addProperty("itemId", parent.getItemId());
+			o.addProperty("quantity", parent.getItemQuantity());
+			ItemComposition comp = client.getItemDefinition(parent.getItemId());
+			if (comp != null)
+			{
+				o.addProperty("name", comp.getName());
+			}
+			String[] ops = parent.getActions();
+			if (ops != null && ops.length > 0)
+			{
+				JsonArray opsArr = new JsonArray();
+				for (String op : ops)
+				{
+					if (op != null)
+					{
+						opsArr.add(Text.removeTags(op));
+					}
+				}
+				o.add("ops", opsArr);
+			}
+			out.add(o);
+		}
+		Widget[][] kinds = {parent.getDynamicChildren(), parent.getStaticChildren(), parent.getNestedChildren()};
+		for (Widget[] children : kinds)
+		{
+			if (children == null)
+			{
+				continue;
+			}
+			for (Widget c : children)
+			{
+				collectItemWidgets(c, out);
+			}
+		}
+	}
+
+	// ---- economy interfaces ----
+
+	private JsonObject listShop() throws Exception
+	{
+		return onClientThread(() ->
+		{
+			Widget items = client.getWidget(InterfaceID.Shopmain.ITEMS);
+			if (items == null || items.isHidden())
+			{
+				throw new IllegalStateException("No shop is open (Shopmain.ITEMS not visible)");
+			}
+			JsonArray stock = new JsonArray();
+			Widget[] slots = items.getDynamicChildren();
 			if (slots != null)
 			{
 				for (Widget slot : slots)
@@ -3766,43 +4093,1001 @@ class McpTools
 					{
 						continue;
 					}
-					if (itemId != null && slot.getItemId() != itemId)
+					JsonObject o = new JsonObject();
+					o.addProperty("slot", slot.getIndex());
+					o.addProperty("itemId", slot.getItemId());
+					o.addProperty("stockQuantity", slot.getItemQuantity());
+					ItemComposition comp = client.getItemDefinition(slot.getItemId());
+					if (comp != null)
+					{
+						o.addProperty("name", comp.getName());
+						o.addProperty("price", comp.getPrice());
+					}
+					String[] ops = slot.getActions();
+					if (ops != null)
+					{
+						JsonArray opsArr = new JsonArray();
+						for (String op : ops)
+						{
+							if (op != null)
+							{
+								opsArr.add(Text.removeTags(op));
+							}
+						}
+						o.add("ops", opsArr);
+					}
+					stock.add(o);
+				}
+			}
+			JsonObject result = new JsonObject();
+			result.addProperty("count", stock.size());
+			result.add("items", stock);
+			return result;
+		});
+	}
+
+	private JsonObject getTrade() throws Exception
+	{
+		return onClientThread(() ->
+		{
+			JsonObject result = new JsonObject();
+			String stage;
+			if (client.getWidget(InterfaceID.Tradeconfirm.FRAME) != null)
+			{
+				stage = "confirm";
+			}
+			else if (client.getWidget(InterfaceID.Trademain.FRAME) != null)
+			{
+				stage = "offer";
+			}
+			else
+			{
+				stage = "none";
+			}
+			result.addProperty("stage", stage);
+			if ("none".equals(stage))
+			{
+				return result;
+			}
+			ItemContainer offer = client.getItemContainer(InventoryID.TRADEOFFER);
+			result.add("myOffer", offer != null ? itemRows(offer) : new JsonArray());
+			result.add("tradeScreenItems", itemWidgetsInGroup(
+				"confirm".equals(stage)
+					? InterfaceID.Tradeconfirm.FRAME >>> 16
+					: InterfaceID.Trademain.FRAME >>> 16));
+			return result;
+		});
+	}
+
+	private JsonObject tradeAction(JsonObject args) throws Exception
+	{
+		if (args.has("action"))
+		{
+			String action = args.get("action").getAsString().toLowerCase();
+			return onClientThread(() ->
+			{
+				Widget button;
+				if (client.getWidget(InterfaceID.Tradeconfirm.FRAME) != null)
+				{
+					button = client.getWidget("accept".equals(action)
+						? InterfaceID.Tradeconfirm.TRADE2ACCEPT : InterfaceID.Tradeconfirm.TRADE2DECLINE);
+				}
+				else if (client.getWidget(InterfaceID.Trademain.FRAME) != null)
+				{
+					button = client.getWidget("accept".equals(action)
+						? InterfaceID.Trademain.ACCEPT : InterfaceID.Trademain.DECLINE);
+				}
+				else
+				{
+					throw new IllegalStateException("No trade screen is open");
+				}
+				if (button == null)
+				{
+					throw new IllegalStateException("Trade '" + action + "' button is not visible");
+				}
+				client.menuAction(button.getIndex(), button.getId(), MenuAction.CC_OP, 1,
+					-1, action, "");
+				JsonObject result = new JsonObject();
+				result.addProperty("invoked", action);
+				return result;
+			});
+		}
+		if (!args.has("option"))
+		{
+			throw new IllegalArgumentException("Provide action (accept/decline) or option + itemId|itemName");
+		}
+		boolean offerSide = args.has("side") && "offer".equalsIgnoreCase(args.get("side").getAsString());
+		if (offerSide)
+		{
+			return itemSlotAction(args, InterfaceID.Trademain.CONTAINER,
+				"No trade screen is open", "offer");
+		}
+		return onClientThread(() ->
+		{
+			// The offer side is the inventory replica inside Tradeside; find the item there.
+			String option = args.get("option").getAsString();
+			Integer itemId = args.has("itemId") ? args.get("itemId").getAsInt() : null;
+			String itemName = args.has("itemName") ? args.get("itemName").getAsString().toLowerCase() : null;
+			JsonObject slotInfo = findWidgetItemOp(InterfaceID.Tradeside.SIDE_LAYER >>> 16,
+				option, itemId, itemName);
+			if (slotInfo == null)
+			{
+				throw new IllegalArgumentException("No '" + option + "' op for item "
+					+ (itemId != null ? itemId : itemName)
+					+ " on the trade offer side - is a trade open?");
+			}
+			client.menuAction(slotInfo.get("slot").getAsInt(), slotInfo.get("containerId").getAsInt(),
+				slotInfo.get("opIndex").getAsInt() < 5 ? MenuAction.CC_OP : MenuAction.CC_OP_LOW_PRIORITY,
+				slotInfo.get("opIndex").getAsInt() + 1, slotInfo.get("itemId").getAsInt(),
+				slotInfo.get("op").getAsString(), "");
+			slotInfo.addProperty("invoked", option);
+			return slotInfo;
+		});
+	}
+
+	/**
+	 * Find a widget in a group carrying an item + an op matching `option`.
+	 * Returns op coordinates for menuAction, or null. Must be on the client thread.
+	 */
+	private JsonObject findWidgetItemOp(int groupId, String option, Integer itemId, String itemName)
+	{
+		for (int child = 0; child < MAX_COMPONENTS_PER_INTERFACE; child++)
+		{
+			Widget w = client.getWidget(WidgetUtil.packComponentId(groupId, child));
+			JsonObject found = findWidgetItemOp(w, option, itemId, itemName);
+			if (found != null)
+			{
+				return found;
+			}
+		}
+		return null;
+	}
+
+	private JsonObject findWidgetItemOp(Widget w, String option, Integer itemId, String itemName)
+	{
+		if (w == null)
+		{
+			return null;
+		}
+		if (w.getItemId() > 0 && (itemId == null || w.getItemId() == itemId))
+		{
+			boolean nameOk = itemName == null;
+			if (!nameOk)
+			{
+				ItemComposition comp = client.getItemDefinition(w.getItemId());
+				nameOk = comp != null && comp.getName() != null
+					&& comp.getName().toLowerCase().contains(itemName);
+			}
+			if (nameOk)
+			{
+				String[] ops = w.getActions();
+				for (int i = 0; ops != null && i < ops.length; i++)
+				{
+					if (ops[i] != null && Text.removeTags(ops[i]).equalsIgnoreCase(option))
+					{
+						JsonObject o = new JsonObject();
+						o.addProperty("slot", w.getIndex());
+						o.addProperty("containerId", w.getId());
+						o.addProperty("opIndex", i);
+						o.addProperty("op", ops[i]);
+						o.addProperty("itemId", w.getItemId());
+						return o;
+					}
+				}
+			}
+		}
+		Widget[][] kinds = {w.getDynamicChildren(), w.getStaticChildren(), w.getNestedChildren()};
+		for (Widget[] children : kinds)
+		{
+			if (children == null)
+			{
+				continue;
+			}
+			for (Widget c : children)
+			{
+				JsonObject found = findWidgetItemOp(c, option, itemId, itemName);
+				if (found != null)
+				{
+					return found;
+				}
+			}
+		}
+		return null;
+	}
+
+	// ---- session ----
+
+	private JsonObject listWorlds() throws Exception
+	{
+		return onClientThread(() ->
+		{
+			World[] worlds = client.getWorldList();
+			JsonArray arr = new JsonArray();
+			if (worlds != null)
+			{
+				int current = client.getWorld();
+				for (World w : worlds)
+				{
+					if (w == null)
 					{
 						continue;
 					}
-					if (itemName != null)
+					JsonObject o = new JsonObject();
+					o.addProperty("id", w.getId());
+					o.addProperty("players", w.getPlayerCount());
+					if (w.getActivity() != null)
 					{
-						ItemComposition composition = client.getItemDefinition(slot.getItemId());
-						String name = composition != null ? composition.getName() : null;
-						if (name == null || !name.toLowerCase().contains(itemName))
-						{
-							continue;
-						}
+						o.addProperty("activity", w.getActivity());
 					}
-					String[] ops = slot.getActions();
-					for (int i = 0; ops != null && i < ops.length; i++)
+					o.addProperty("location", w.getLocation());
+					o.addProperty("address", w.getAddress());
+					JsonArray types = new JsonArray();
+					if (w.getTypes() != null)
 					{
-						if (ops[i] != null && Text.removeTags(ops[i]).equalsIgnoreCase(option))
-						{
-							client.menuAction(slot.getIndex(), containerWidget,
-								i < 5 ? MenuAction.CC_OP : MenuAction.CC_OP_LOW_PRIORITY, i + 1,
-								slot.getItemId(), ops[i], slot.getName());
-							JsonObject result = new JsonObject();
-							result.addProperty("invoked", ops[i]);
-							result.addProperty("slot", slot.getIndex());
-							result.addProperty("itemId", slot.getItemId());
-							result.addProperty("side", depositSide ? "inventory" : "bank");
-							return result;
-						}
+						w.getTypes().forEach(t -> types.add(t.name()));
 					}
-					throw new IllegalArgumentException("Bank item has no '" + option
-						+ "' op. Available: " + availableActions(ops));
+					o.add("types", types);
+					o.addProperty("current", w.getId() == current);
+					arr.add(o);
 				}
 			}
-			throw new IllegalArgumentException("Item not found on the "
-				+ (depositSide ? "deposit" : "withdraw") + " side: "
-				+ (itemId != null ? "id " + itemId : itemName));
+			JsonObject result = new JsonObject();
+			result.addProperty("count", arr.size());
+			result.addProperty("currentWorld", client.getWorld());
+			result.add("worlds", arr);
+			return result;
 		});
+	}
+
+	private JsonObject hopWorld(JsonObject args) throws Exception
+	{
+		int worldId = args.get("world").getAsInt();
+		return onClientThread(() ->
+		{
+			World[] worlds = client.getWorldList();
+			if (worlds == null || worlds.length == 0)
+			{
+				throw new IllegalStateException("The client has no world list to hop between");
+			}
+			World target = null;
+			for (World w : worlds)
+			{
+				if (w != null && w.getId() == worldId)
+				{
+					target = w;
+					break;
+				}
+			}
+			if (target == null)
+			{
+				throw new IllegalArgumentException("World " + worldId + " is not in the world list");
+			}
+			client.hopToWorld(target);
+			JsonObject result = new JsonObject();
+			result.addProperty("hopping", true);
+			result.addProperty("world", worldId);
+			return result;
+		});
+	}
+
+	private JsonObject logout() throws Exception
+	{
+		return onClientThread(() ->
+		{
+			// Any widget in the Logout group carrying a "Logout" op is the button.
+			JsonObject found = null;
+			for (int child = 0; child < MAX_COMPONENTS_PER_INTERFACE && found == null; child++)
+			{
+				Widget w = client.getWidget(WidgetUtil.packComponentId(
+					InterfaceID.Logout.LOGOUT >>> 16, child));
+				found = findOpOnWidget(w, "logout");
+			}
+			if (found == null)
+			{
+				throw new IllegalStateException("The logout interface is not loaded - open the logout tab first");
+			}
+			client.menuAction(found.get("slot").getAsInt(), found.get("widgetId").getAsInt(),
+				MenuAction.CC_OP, found.get("opIndex").getAsInt() + 1, -1, "Logout", "");
+			JsonObject result = new JsonObject();
+			result.addProperty("invoked", "Logout");
+			result.addProperty("widgetId", found.get("widgetId").getAsInt());
+			return result;
+		});
+	}
+
+	/** Depth-first search for a widget exposing an op containing `option`. Client thread only. */
+	private JsonObject findOpOnWidget(Widget w, String option)
+	{
+		if (w == null || w.isHidden())
+		{
+			return null;
+		}
+		String[] ops = w.getActions();
+		if (ops != null)
+		{
+			for (int i = 0; i < ops.length; i++)
+			{
+				if (ops[i] != null && Text.removeTags(ops[i]).toLowerCase().contains(option))
+				{
+					JsonObject o = new JsonObject();
+					o.addProperty("widgetId", w.getId());
+					o.addProperty("slot", w.getIndex());
+					o.addProperty("opIndex", i);
+					return o;
+				}
+			}
+		}
+		Widget[][] kinds = {w.getDynamicChildren(), w.getStaticChildren(), w.getNestedChildren()};
+		for (Widget[] children : kinds)
+		{
+			if (children == null)
+			{
+				continue;
+			}
+			for (Widget c : children)
+			{
+				JsonObject found = findOpOnWidget(c, option);
+				if (found != null)
+				{
+					return found;
+				}
+			}
+		}
+		return null;
+	}
+
+	private JsonObject listQuests(JsonObject args) throws Exception
+	{
+		String nameFilter = args.has("nameFilter")
+			? args.get("nameFilter").getAsString().toLowerCase() : null;
+		String stateFilter = args.has("state")
+			? args.get("state").getAsString().toUpperCase() : null;
+		return onClientThread(() ->
+		{
+			JsonArray quests = new JsonArray();
+			for (Quest quest : Quest.values())
+			{
+				String state = quest.getState(client).name();
+				if (stateFilter != null && !state.equals(stateFilter))
+				{
+					continue;
+				}
+				String name = quest.getName();
+				if (nameFilter != null && (name == null || !name.toLowerCase().contains(nameFilter)))
+				{
+					continue;
+				}
+				JsonObject o = new JsonObject();
+				o.addProperty("id", quest.getId());
+				o.addProperty("name", name);
+				o.addProperty("state", state);
+				quests.add(o);
+			}
+			JsonObject result = new JsonObject();
+			result.addProperty("count", quests.size());
+			result.add("quests", quests);
+			return result;
+		});
+	}
+
+	// ---- definition inspectors ----
+
+	private JsonObject itemDef(JsonObject args) throws Exception
+	{
+		int id = args.get("id").getAsInt();
+		return onClientThread(() ->
+		{
+			ItemComposition comp = client.getItemDefinition(id);
+			if (comp == null)
+			{
+				throw new IllegalArgumentException("No item definition for id " + id);
+			}
+			JsonObject o = new JsonObject();
+			o.addProperty("id", id);
+			o.addProperty("name", comp.getName());
+			o.addProperty("note", comp.getNote());
+			o.addProperty("linkedNoteId", comp.getLinkedNoteId());
+			o.addProperty("placeholderId", comp.getPlaceholderId());
+			o.addProperty("placeholderTemplateId", comp.getPlaceholderTemplateId());
+			o.addProperty("price", comp.getPrice());
+			o.addProperty("members", comp.isMembers());
+			o.addProperty("stackable", comp.isStackable());
+			o.addProperty("tradeable", comp.isTradeable());
+			JsonArray ops = new JsonArray();
+			String[] inv = comp.getInventoryActions();
+			if (inv != null)
+			{
+				for (String op : inv)
+				{
+					if (op != null)
+					{
+						ops.add(op);
+					}
+				}
+			}
+			o.add("inventoryActions", ops);
+			return o;
+		});
+	}
+
+	private JsonObject npcDef(JsonObject args) throws Exception
+	{
+		int id = args.get("id").getAsInt();
+		return onClientThread(() ->
+		{
+			NPCComposition comp = client.getNpcDefinition(id);
+			if (comp == null)
+			{
+				throw new IllegalArgumentException("No NPC definition for id " + id);
+			}
+			JsonObject o = new JsonObject();
+			o.addProperty("id", id);
+			o.addProperty("name", comp.getName());
+			o.addProperty("combatLevel", comp.getCombatLevel());
+			o.addProperty("size", comp.getSize());
+			o.addProperty("interactible", comp.isInteractible());
+			JsonArray ops = new JsonArray();
+			String[] actions = comp.getActions();
+			if (actions != null)
+			{
+				for (String action : actions)
+				{
+					if (action != null)
+					{
+						ops.add(action);
+					}
+				}
+			}
+			o.add("actions", ops);
+			JsonArray transforms = new JsonArray();
+			int[] configs = comp.getConfigs();
+			if (configs != null)
+			{
+				for (int c : configs)
+				{
+					transforms.add(c);
+				}
+			}
+			o.add("transformIds", transforms);
+			return o;
+		});
+	}
+
+	private JsonObject objectDef(JsonObject args) throws Exception
+	{
+		int id = args.get("id").getAsInt();
+		return onClientThread(() ->
+		{
+			ObjectComposition comp = client.getObjectDefinition(id);
+			if (comp == null)
+			{
+				throw new IllegalArgumentException("No object definition for id " + id);
+			}
+			JsonObject o = new JsonObject();
+			o.addProperty("id", id);
+			o.addProperty("name", comp.getName());
+			o.addProperty("sizeX", comp.getSizeX());
+			o.addProperty("sizeY", comp.getSizeY());
+			o.addProperty("mapSceneId", comp.getMapSceneId());
+			o.addProperty("varbitId", comp.getVarbitId());
+			JsonArray ops = new JsonArray();
+			String[] actions = comp.getActions();
+			if (actions != null)
+			{
+				for (String action : actions)
+				{
+					if (action != null)
+					{
+						ops.add(action);
+					}
+				}
+			}
+			o.add("actions", ops);
+			JsonArray impostors = new JsonArray();
+			int[] impostorIds = comp.getImpostorIds();
+			if (impostorIds != null)
+			{
+				for (int i : impostorIds)
+				{
+					impostors.add(i);
+				}
+			}
+			o.add("impostorIds", impostors);
+			return o;
+		});
+	}
+
+	// ---- movement / collision ----
+
+	private JsonObject findPath(JsonObject args) throws Exception
+	{
+		int targetX = args.get("x").getAsInt();
+		int targetY = args.get("y").getAsInt();
+		int maxPath = optInt(args, "maxPath", 200);
+		return onClientThread(() ->
+		{
+			int plane = args.has("plane") ? args.get("plane").getAsInt() : client.getPlane();
+			WorldPoint from;
+			if (args.has("fromX") && args.has("fromY"))
+			{
+				from = new WorldPoint(args.get("fromX").getAsInt(), args.get("fromY").getAsInt(), plane);
+			}
+			else
+			{
+				Player local = client.getLocalPlayer();
+				from = local != null ? local.getWorldLocation() : null;
+				if (from == null)
+				{
+					throw new IllegalStateException("Local player is not available");
+				}
+			}
+			CollisionData[] maps = client.getCollisionMaps();
+			if (maps == null || maps[plane] == null)
+			{
+				throw new IllegalStateException("No collision map loaded for plane " + plane);
+			}
+			int[][] flags = maps[plane].getFlags();
+			int baseX = client.getTopLevelWorldView() != null ? client.getTopLevelWorldView().getBaseX() : -1;
+			int baseY = client.getTopLevelWorldView() != null ? client.getTopLevelWorldView().getBaseY() : -1;
+			if (baseX < 0)
+			{
+				throw new IllegalStateException("Scene base coordinates unavailable");
+			}
+			int sx = from.getX() - baseX, sy = from.getY() - baseY;
+			int tx = targetX - baseX, ty = targetY - baseY;
+			int w = flags.length, h = flags[0].length;
+			if (tx < 0 || ty < 0 || tx >= w || ty >= h)
+			{
+				throw new IllegalArgumentException("Target " + targetX + "," + targetY
+					+ " is outside the loaded scene");
+			}
+			if (sx < 0 || sy < 0 || sx >= w || sy >= h)
+			{
+				throw new IllegalArgumentException("Start tile is outside the loaded scene");
+			}
+			int tileBlock = CollisionDataFlag.BLOCK_MOVEMENT_FULL
+				| CollisionDataFlag.BLOCK_MOVEMENT_OBJECT
+				| CollisionDataFlag.BLOCK_MOVEMENT_FLOOR_DECORATION
+				| CollisionDataFlag.BLOCK_MOVEMENT_FLOOR;
+			boolean[][] seen = new boolean[w][h];
+			int[][] prev = new int[w * h][2];
+			ArrayDeque<int[]> queue = new ArrayDeque<>();
+			seen[sx][sy] = true;
+			queue.add(new int[]{sx, sy});
+			int count = 0;
+			boolean reached = false;
+			int[][] dirs = {
+				{0, 1, CollisionDataFlag.BLOCK_MOVEMENT_NORTH, CollisionDataFlag.BLOCK_MOVEMENT_SOUTH},
+				{1, 0, CollisionDataFlag.BLOCK_MOVEMENT_EAST, CollisionDataFlag.BLOCK_MOVEMENT_WEST},
+				{0, -1, CollisionDataFlag.BLOCK_MOVEMENT_SOUTH, CollisionDataFlag.BLOCK_MOVEMENT_NORTH},
+				{-1, 0, CollisionDataFlag.BLOCK_MOVEMENT_WEST, CollisionDataFlag.BLOCK_MOVEMENT_EAST}};
+			while (!queue.isEmpty() && !reached)
+			{
+				int[] cur = queue.poll();
+				count++;
+				for (int[] d : dirs)
+				{
+					int nx = cur[0] + d[0], ny = cur[1] + d[1];
+					if (nx < 0 || ny < 0 || nx >= w || ny >= h || seen[nx][ny])
+					{
+						continue;
+					}
+					if ((flags[cur[0]][cur[1]] & d[2]) != 0 || (flags[nx][ny] & d[3]) != 0
+						|| (flags[nx][ny] & tileBlock) != 0)
+					{
+						continue;
+					}
+					seen[nx][ny] = true;
+					prev[nx * w + ny] = cur;
+					if (nx == tx && ny == ty)
+					{
+						reached = true;
+						break;
+					}
+					queue.add(new int[]{nx, ny});
+				}
+			}
+			JsonObject result = new JsonObject();
+			result.addProperty("reachable", reached);
+			if (reached)
+			{
+				List<int[]> reversed = new ArrayList<>();
+				int[] cur = {tx, ty};
+				while (cur != null)
+				{
+					reversed.add(cur);
+					cur = prev[cur[0] * w + cur[1]];
+				}
+				Collections.reverse(reversed);
+				result.addProperty("length", reversed.size() - 1);
+				JsonArray path = new JsonArray();
+				for (int i = 0; i < reversed.size() && i < maxPath; i++)
+				{
+					JsonObject step = new JsonObject();
+					step.addProperty("x", reversed.get(i)[0] + baseX);
+					step.addProperty("y", reversed.get(i)[1] + baseY);
+					path.add(step);
+				}
+				result.addProperty("truncated", reversed.size() > maxPath);
+				result.add("path", path);
+			}
+			result.addProperty("tilesVisited", count);
+			return result;
+		});
+	}
+
+	private JsonObject getCollisionArea(JsonObject args) throws Exception
+	{
+		int ox = args.get("x").getAsInt();
+		int oy = args.get("y").getAsInt();
+		int width = Math.min(optInt(args, "width", 8), 32);
+		int height = Math.min(optInt(args, "height", 8), 32);
+		return onClientThread(() ->
+		{
+			int plane = args.has("plane") ? args.get("plane").getAsInt() : client.getPlane();
+			CollisionData[] maps = client.getCollisionMaps();
+			if (maps == null || maps[plane] == null)
+			{
+				throw new IllegalStateException("No collision map loaded for plane " + plane);
+			}
+			int[][] flags = maps[plane].getFlags();
+			int tileBlock = CollisionDataFlag.BLOCK_MOVEMENT_FULL
+				| CollisionDataFlag.BLOCK_MOVEMENT_OBJECT
+				| CollisionDataFlag.BLOCK_MOVEMENT_FLOOR_DECORATION
+				| CollisionDataFlag.BLOCK_MOVEMENT_FLOOR;
+			JsonArray rows = new JsonArray();
+			JsonArray walkRows = new JsonArray();
+			for (int wy = oy + height - 1; wy >= oy; wy--)
+			{
+				JsonArray flagRow = new JsonArray();
+				StringBuilder walkRow = new StringBuilder();
+				for (int wx = ox; wx < ox + width; wx++)
+				{
+					LocalPoint lp = LocalPoint.fromWorld(client, new WorldPoint(wx, wy, plane));
+					if (lp == null)
+					{
+						flagRow.add(JsonNull.INSTANCE);
+						walkRow.append(' ');
+						continue;
+					}
+					int f = flags[lp.getSceneX()][lp.getSceneY()];
+					flagRow.add(f);
+					walkRow.append((f & tileBlock) != 0 ? '#' : (f != 0 ? '+' : '.'));
+				}
+				rows.add(flagRow);
+				walkRows.add(walkRow.toString());
+			}
+			JsonObject result = new JsonObject();
+			result.addProperty("x", ox);
+			result.addProperty("y", oy);
+			result.addProperty("width", width);
+			result.addProperty("height", height);
+			result.addProperty("plane", plane);
+			result.add("flags", rows);
+			result.add("walkableMap", walkRows);
+			result.addProperty("legend",
+				"flags: raw int per tile, top row = north. walkableMap: '.' clear, '+' wall flags, '#' blocked tile");
+			return result;
+		});
+	}
+
+	private JsonObject setCamera(JsonObject args) throws Exception
+	{
+		return onClientThread(() ->
+		{
+			if (args.has("yaw"))
+			{
+				client.setCameraYawTarget(args.get("yaw").getAsInt());
+			}
+			if (args.has("pitch"))
+			{
+				client.setCameraPitchTarget(args.get("pitch").getAsInt());
+			}
+			JsonObject result = new JsonObject();
+			result.addProperty("yaw", client.getCameraYawTarget());
+			result.addProperty("pitch", client.getCameraPitchTarget());
+			return result;
+		});
+	}
+
+	// ---- item-on-target ----
+
+	private JsonObject useItem(JsonObject args) throws Exception
+	{
+		Integer itemId = args.has("itemId") ? args.get("itemId").getAsInt() : null;
+		String itemName = args.has("itemName") ? args.get("itemName").getAsString().toLowerCase() : null;
+		if (itemId == null && itemName == null)
+		{
+			throw new IllegalArgumentException("Provide itemId or itemName for the item to use");
+		}
+		boolean hasTarget = args.has("npcIndex") || args.has("npcName") || args.has("objectId")
+			|| args.has("playerName") || args.has("targetItemId") || args.has("targetItemName");
+		if (!hasTarget)
+		{
+			throw new IllegalArgumentException(
+				"Provide a target: npcIndex|npcName, objectId+x+y, playerName or targetItemId|targetItemName");
+		}
+		// Step 1: invoke "Use" on the item slot - the same CC_OP a right-click sends.
+		JsonObject used = onClientThread(() ->
+		{
+			Widget inventory = client.getWidget(InterfaceID.Inventory.ITEMS);
+			if (inventory == null)
+			{
+				throw new IllegalStateException("Inventory widget is not loaded");
+			}
+			Widget slot = findItemSlot(inventory, itemId, itemName);
+			if (slot == null)
+			{
+				throw new IllegalArgumentException("Item not found in inventory: "
+					+ (itemId != null ? "id " + itemId : itemName));
+			}
+			String[] ops = slot.getActions();
+			for (int i = 0; ops != null && i < ops.length; i++)
+			{
+				if (ops[i] != null && Text.removeTags(ops[i]).equalsIgnoreCase("Use"))
+				{
+					client.menuAction(slot.getIndex(), InterfaceID.Inventory.ITEMS,
+						i < 5 ? MenuAction.CC_OP : MenuAction.CC_OP_LOW_PRIORITY, i + 1,
+						slot.getItemId(), ops[i], slot.getName());
+					JsonObject o = new JsonObject();
+					o.addProperty("itemId", slot.getItemId());
+					o.addProperty("slot", slot.getIndex());
+					return o;
+				}
+			}
+			throw new IllegalArgumentException("Item has no 'Use' op. Available: " + availableActions(ops));
+		});
+		pauseMs(100); // let the clientscript put the client in item-target mode
+		// Step 2: hover the target so the menu builds the "Use item -> target" entry.
+		Point hover = onClientThread(() -> targetHoverPoint(args));
+		if (hover == null)
+		{
+			throw new IllegalStateException("Could not get a hover point for the target");
+		}
+		String targetNeedle = onClientThread(() -> useItemTargetName(args));
+		JsonElement invoked = hoverAndInvoke(hover, "use", targetNeedle);
+		JsonObject result = invoked.getAsJsonObject();
+		result.addProperty("usedItemId", used.get("itemId").getAsInt());
+		return result;
+	}
+
+	/** Hover point for a use_item target. Must be on the client thread. */
+	private Point targetHoverPoint(JsonObject args)
+	{
+		if (args.has("npcIndex") || args.has("npcName"))
+		{
+			NPC npc = findNpc(args);
+			return npc != null ? actorHoverPoint(npc) : null;
+		}
+		if (args.has("objectId") && args.has("x") && args.has("y"))
+		{
+			int objectId = args.get("objectId").getAsInt();
+			int x = args.get("x").getAsInt();
+			int y = args.get("y").getAsInt();
+			int plane = args.has("plane") ? args.get("plane").getAsInt() : client.getPlane();
+			LocalPoint lp = LocalPoint.fromWorld(client, new WorldPoint(x, y, plane));
+			if (lp == null)
+			{
+				return null;
+			}
+			Scene scene = client.getScene();
+			Tile tile = scene != null ? scene.getTiles()[plane][lp.getSceneX()][lp.getSceneY()] : null;
+			TileObject obj = tile == null ? null : tileObjects(tile, new HashSet<>()).stream()
+				.filter(o -> o.getId() == objectId).findFirst().orElse(null);
+			return obj != null ? objectHoverPoint(obj) : null;
+		}
+		if (args.has("playerName"))
+		{
+			String needle = args.get("playerName").getAsString().toLowerCase();
+			Player local = client.getLocalPlayer();
+			for (Player p : client.getPlayers())
+			{
+				if (p != null && p != local && p.getName() != null
+					&& p.getName().toLowerCase().contains(needle))
+				{
+					return actorHoverPoint(p);
+				}
+			}
+			return null;
+		}
+		if (args.has("targetItemId") || args.has("targetItemName"))
+		{
+			Widget inventory = client.getWidget(InterfaceID.Inventory.ITEMS);
+			if (inventory == null || inventory.isHidden())
+			{
+				return null;
+			}
+			Integer targetId = args.has("targetItemId") ? args.get("targetItemId").getAsInt() : null;
+			String targetName = args.has("targetItemName")
+				? args.get("targetItemName").getAsString().toLowerCase() : null;
+			Widget slot = findItemSlot(inventory, targetId, targetName);
+			if (slot == null)
+			{
+				return null;
+			}
+			Rectangle b = slot.getBounds();
+			return b != null ? new Point(b.x + b.width / 2, b.y + b.height / 2) : null;
+		}
+		return null;
+	}
+
+	/** Lower-case name to match inside the "Use item -> target" menu target. Client thread only. */
+	private String useItemTargetName(JsonObject args)
+	{
+		if (args.has("npcIndex") || args.has("npcName"))
+		{
+			NPC npc = findNpc(args);
+			return npc != null && npc.getName() != null ? npc.getName().toLowerCase() : null;
+		}
+		if (args.has("objectId"))
+		{
+			ObjectComposition comp = client.getObjectDefinition(args.get("objectId").getAsInt());
+			return comp != null && comp.getName() != null ? comp.getName().toLowerCase() : null;
+		}
+		if (args.has("playerName"))
+		{
+			return args.get("playerName").getAsString().toLowerCase();
+		}
+		if (args.has("targetItemName"))
+		{
+			return args.get("targetItemName").getAsString().toLowerCase();
+		}
+		if (args.has("targetItemId"))
+		{
+			ItemComposition comp = client.getItemDefinition(args.get("targetItemId").getAsInt());
+			return comp != null && comp.getName() != null ? comp.getName().toLowerCase() : null;
+		}
+		return null;
+	}
+
+	// ---- screenshot diffing ----
+
+	private static final int MAX_BASELINES = 8;
+	private static final int MAX_BASELINE_PIXELS = 1_048_576;
+
+	private static final class ScreenBaseline
+	{
+		final int[] rgb;
+		final int width;
+		final int height;
+
+		ScreenBaseline(int[] rgb, int width, int height)
+		{
+			this.rgb = rgb;
+			this.width = width;
+			this.height = height;
+		}
+	}
+
+	/** Stored screenshot baselines by label, oldest evicted past MAX_BASELINES. */
+	private final Map<String, ScreenBaseline> screenBaselines =
+		new LinkedHashMap<String, ScreenBaseline>(16, 0.75f, true)
+		{
+			@Override
+			protected boolean removeEldestEntry(Map.Entry<String, ScreenBaseline> eldest)
+			{
+				return size() > MAX_BASELINES;
+			}
+		};
+
+	private JsonObject compareScreenshot(JsonObject args) throws Exception
+	{
+		String label = args.has("label") ? args.get("label").getAsString() : "default";
+		boolean rebaseline = args.has("rebaseline") && args.get("rebaseline").getAsBoolean();
+		double threshold = args.has("thresholdPct") ? args.get("thresholdPct").getAsDouble() : 0;
+		Rectangle crop = resolveCrop(args);
+		BufferedImage frame = captureFrame();
+		if (crop != null)
+		{
+			Rectangle clamped = crop.intersection(new Rectangle(0, 0, frame.getWidth(), frame.getHeight()));
+			if (clamped.isEmpty())
+			{
+				throw new IllegalArgumentException("Crop region " + crop + " is outside the canvas ("
+					+ frame.getWidth() + "x" + frame.getHeight() + ")");
+			}
+			frame = frame.getSubimage(clamped.x, clamped.y, clamped.width, clamped.height);
+			crop = clamped;
+		}
+		int width = frame.getWidth();
+		int height = frame.getHeight();
+		if (width * height > MAX_BASELINE_PIXELS)
+		{
+			throw new IllegalArgumentException("Region " + width + "x" + height
+				+ " exceeds the " + MAX_BASELINE_PIXELS + "-pixel baseline cap - crop smaller");
+		}
+		int[] rgb = frame.getRGB(0, 0, width, height, null, 0, width);
+		JsonObject result = new JsonObject();
+		result.addProperty("label", label);
+		result.addProperty("width", width);
+		result.addProperty("height", height);
+		if (crop != null)
+		{
+			result.addProperty("cropX", crop.x);
+			result.addProperty("cropY", crop.y);
+		}
+		ScreenBaseline baseline = screenBaselines.get(label);
+		if (rebaseline || baseline == null)
+		{
+			screenBaselines.put(label, new ScreenBaseline(rgb, width, height));
+			result.addProperty("stored", true);
+			result.addProperty("rebaselined", rebaseline && baseline != null);
+			return result;
+		}
+		if (baseline.width != width || baseline.height != height)
+		{
+			result.addProperty("match", false);
+			result.addProperty("reason", "region size changed: baseline was "
+				+ baseline.width + "x" + baseline.height);
+			result.addProperty("changedPct", 100);
+			return result;
+		}
+		int changed = 0;
+		int minX = width, minY = height, maxX = -1, maxY = -1;
+		for (int y = 0; y < height; y++)
+		{
+			for (int x = 0; x < width; x++)
+			{
+				if (rgb[y * width + x] != baseline.rgb[y * width + x])
+				{
+					changed++;
+					if (x < minX) minX = x;
+					if (x > maxX) maxX = x;
+					if (y < minY) minY = y;
+					if (y > maxY) maxY = y;
+				}
+			}
+		}
+		double pct = changed * 100.0 / (width * height);
+		result.addProperty("match", pct <= threshold);
+		result.addProperty("changedPixels", changed);
+		result.addProperty("totalPixels", width * height);
+		result.addProperty("changedPct", Math.round(pct * 1000.0) / 1000.0);
+		if (changed > 0)
+		{
+			JsonObject bbox = new JsonObject();
+			bbox.addProperty("x", minX + (crop != null ? crop.x : 0));
+			bbox.addProperty("y", minY + (crop != null ? crop.y : 0));
+			bbox.addProperty("width", maxX - minX + 1);
+			bbox.addProperty("height", maxY - minY + 1);
+			result.add("diffBounds", bbox);
+		}
+		return result;
+	}
+
+	/** Crop region shared by screenshot and compare_screenshot, or null for full canvas. */
+	private Rectangle resolveCrop(JsonObject args) throws Exception
+	{
+		if (args.has("componentId"))
+		{
+			int padding = optInt(args, "padding", 0);
+			Rectangle bounds = onClientThread(() ->
+			{
+				Widget w = resolveWidget(args, "componentId", "childIndex");
+				return w == null || w.isHidden() ? null : w.getBounds();
+			});
+			if (bounds == null)
+			{
+				throw new IllegalArgumentException("Widget not found or hidden: " + describeId(args, "componentId", "childIndex"));
+			}
+			return pad(bounds, padding);
+		}
+		if (args.has("interfaceId"))
+		{
+			int padding = optInt(args, "padding", 0);
+			Rectangle bounds = onClientThread(() -> interfaceBounds(args.get("interfaceId").getAsInt()));
+			if (bounds == null)
+			{
+				throw new IllegalArgumentException("Interface " + args.get("interfaceId").getAsInt()
+					+ " is not loaded or has no visible components");
+			}
+			return pad(bounds, padding);
+		}
+		if (args.has("x") && args.has("y") && args.has("width") && args.has("height"))
+		{
+			return new Rectangle(args.get("x").getAsInt(), args.get("y").getAsInt(),
+				args.get("width").getAsInt(), args.get("height").getAsInt());
+		}
+		return null;
 	}
 
 	private JsonObject waitFor(JsonObject args) throws Exception
@@ -4076,12 +5361,85 @@ class McpTools
 				}
 				break;
 			}
+			case "xp":
+			{
+				String skillName = args.get("skill").getAsString().toUpperCase();
+				Skill skill;
+				try
+				{
+					skill = Skill.valueOf(skillName);
+				}
+				catch (IllegalArgumentException ex)
+				{
+					throw new IllegalArgumentException("Unknown skill: " + skillName);
+				}
+				if (!args.has("_baselineXp"))
+				{
+					args.addProperty("_baselineXp", client.getSkillExperience(skill));
+				}
+				int baseline = args.get("_baselineXp").getAsInt();
+				int current = client.getSkillExperience(skill);
+				int wanted = args.has("amount") ? args.get("amount").getAsInt() : 1;
+				met = current - baseline >= wanted;
+				o.addProperty("baselineXp", baseline);
+				o.addProperty("xp", current);
+				o.addProperty("xpGained", current - baseline);
+				o.addProperty("level", client.getRealSkillLevel(skill));
+				break;
+			}
+			case "container":
+			{
+				int containerId = optInt(args, "containerId", InventoryID.INV);
+				int itemId = args.get("itemId").getAsInt();
+				ItemContainer container = client.getItemContainer(containerId);
+				int current = container != null ? container.count(itemId) : 0;
+				if (!args.has("_baselineCount"))
+				{
+					args.addProperty("_baselineCount", current);
+				}
+				int baseline = args.get("_baselineCount").getAsInt();
+				met = current != baseline;
+				o.addProperty("containerId", containerId);
+				o.addProperty("itemId", itemId);
+				o.addProperty("baselineCount", baseline);
+				o.addProperty("count", current);
+				o.addProperty("delta", current - baseline);
+				break;
+			}
+			case "action":
+			{
+				String filter = args.has("textContains") ? args.get("textContains").getAsString()
+					: args.has("filter") ? args.get("filter").getAsString() : null;
+				JsonObject history = recorder.actionHistory(
+					System.currentTimeMillis() - startMs, filter, 50);
+				met = false;
+				for (JsonElement e : history.getAsJsonArray("events"))
+				{
+					o.add("action", e);
+					met = true;
+					break;
+				}
+				break;
+			}
+			case "world":
+			{
+				if (!args.has("_baselineWorld"))
+				{
+					args.addProperty("_baselineWorld", client.getWorld());
+				}
+				int baseline = args.get("_baselineWorld").getAsInt();
+				int current = client.getWorld();
+				met = current != baseline;
+				o.addProperty("baselineWorld", baseline);
+				o.addProperty("world", current);
+				break;
+			}
 			default:
 				throw new IllegalArgumentException("Unknown condition: " + condition
 					+ " (idle, at_tile, npc_dead, dialogue, interface_open, interface_closed,"
 					+ " chat_message, hitsplat, projectile, animation, spotanim, var,"
 					+ " in_combat, out_of_combat, prayer, ticks, spawn, despawn, transform,"
-					+ " loot, overhead)");
+					+ " loot, overhead, xp, container, action, world)");
 		}
 		o.addProperty("met", met);
 		return o;
