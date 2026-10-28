@@ -207,15 +207,18 @@ client — see section 8.
 
 ## 7. Commits
 
-(to be filled in when pushed)
+- `fb9d9af` "Adopt upstream PR #2/#3 with hardening; add tests and transport
+  safety" — pushed to `fork/devexity-mcp-improvements`. `main` (fork + local)
+  and `prod` remain at `8304e71` / `d3951fd` respectively.
 
 ## 8. Live verification
 
-Baseline plugin was verified earlier (initialize handshake, `get_client_state`,
-dashboard + `/log`, `type_chat`, `press_key`, `screenshot` at LOGIN_SCREEN).
-The improved build has been compiled, tested and packaged but **not installed**
-into any client — sideloaded jars only load at client start and `deploy` is an
-explicit task. Live verification steps for the user:
+Live MCP server at `127.0.0.1:7780` verified reachable and **logged in**
+(world 3220,3219) but still running the **baseline** build (`flux-client-mcp
+0.1.0`): `initialize`, `get_client_state`, `list_npcs` all answer;
+`get_combat_state` correctly returns "Unknown tool" — the new jar is not
+loaded because sideloaded jars only load at client start and `deploy` is now
+an explicit task. Live verification steps for the user:
 
 1. `./gradlew deploy -PsideloadDirs=<your test client's dir>`
 2. Restart that client, enable the plugin, hit `initialize`/`tools/list` —
