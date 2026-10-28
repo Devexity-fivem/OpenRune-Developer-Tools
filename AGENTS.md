@@ -1,5 +1,26 @@
 # RuneLite Plugin Development — Agent Guidelines
 
+> **Project context:** this repository is a *sideloaded developer tool for
+> private-server testing*, not a candidate for the RuneLite plugin hub. The hub
+> restrictions below are kept as a reference baseline, but several of them are
+> the point of this tool and are waived deliberately:
+>
+> - Input injection (mouse/keyboard events, `menuAction`, autotyping) is the
+>   tool's core purpose.
+> - Exposing game state over HTTP is the tool's core purpose; the MCP server
+>   mitigates this by binding loopback only, rejecting cross-origin requests,
+>   and capping request bodies.
+> - `ItemIconTool` reads three `ItemComposition` fields that have no API
+>   accessors via reflection. It is the only reflection in the codebase, it
+>   degrades to inert sliders on failure, and replacing it would require
+>   dropping the feature. No new reflection.
+>
+> Everything else in this file — threading, blocking-IO, ProcessBuilder,
+> external processes, Java serialization, `Thread.sleep`, OkHttp/Gson
+> injection, file I/O scope — applies in full.
+
+
+
 ## Logging
 
 - Use `log.debug()` for developer/diagnostic logging.

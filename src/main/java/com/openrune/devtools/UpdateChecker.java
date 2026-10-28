@@ -27,52 +27,54 @@ package com.openrune.devtools;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
-import java.util.ArrayList;
-import java.util.List;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.ChatMessageType;
 import net.runelite.api.Client;
 import net.runelite.api.GameState;
 import net.runelite.client.callback.ClientThread;
+import okhttp3.Call;
+import okhttp3.Callback;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.Response;
+import okhttp3.ResponseBody;
 
 /**
- * Checks the GitHub releases of this plugin for a newer build, downloads the
- * jar into every client's sideloaded-plugins folder, and schedules a swap for
- * any copy that is locked by the running client.
+ * Checks this fork's GitHub releases for a newer build and announces it in game.
+ * Deliberately notify-only: downloading a jar is an unauthenticated third-party
+ * fetch and swapping it in requires external processes, so the user installs
+ * updates by dropping the asset into their sideloaded-plugins folder.
  */
 @Slf4j
 class UpdateChecker
 {
+	// The fork publishes its own releases; checking upstream's would point users
+	// at a different lineage than the one they are running.
 	private static final String RELEASES_API =
-		"https://api.github.com/repos/OpenRune/OpenRune-Developer-Tools/releases/latest";
-	private static final String JAR_NAME = "OpenRune-Developer-Tools.jar";
-	private static final String[] CLIENT_DIRS = {".runelite", ".rsprox", ".fluxious"};
+		"https://api.github.com/repos/Devexity-fivem/OpenRune-Developer-Tools/releases/latest";
+	private static final String RELEASES_PAGE =
+		"https://github.com/Devexity-fivem/OpenRune-Developer-Tools/releases";
 
 	private final Client client;
 	private final ClientThread clientThread;
+	private final OkHttpClient okHttpClient;
 
 	@Getter
 	private volatile String latestTag;
 	@Getter
-	private volatile boolean updateApplied;
+	private volatile boolean updateAvailable;
 
-	UpdateChecker(Client client, ClientThread clientThread)
+	UpdateChecker(Client client, ClientThread clientThread, OkHttpClient okHttpClient)
 	{
 		this.client = client;
 		this.clientThread = clientThread;
+		this.okHttpClient = okHttpClient;
 	}
 
-	/** Fire-and-forget: check for a newer release and grab it if found. */
+	/** Fire-and-forget: check for a newer release on the OkHttp thread pool. */
 	void checkAsync()
 	{
 		String current = currentVersion();
@@ -81,73 +83,63 @@ class UpdateChecker
 			log.info("Dev build ({}); skipping update check", current);
 			return;
 		}
-		Thread t = new Thread(() -> check(current), "openrune-update-check");
-		t.setDaemon(true);
-		t.start();
-	}
-
-	private void check(String current)
-	{
-		try
+		Request request = new Request.Builder()
+			.url(RELEASES_API)
+			.header("Accept", "application/vnd.github+json")
+			.build();
+		okHttpClient.newCall(request).enqueue(new Callback()
 		{
-			JsonObject release = fetchLatestRelease();
-			String tag = release.get("tag_name").getAsString();
-			latestTag = tag;
-			String latest = tag.startsWith("v") ? tag.substring(1) : tag;
-			if (latest.equals(current))
+			@Override
+			public void onFailure(Call call, IOException e)
 			{
-				log.info("OpenRune-DeveloperTools {} is up to date", current);
-				return;
+				// Offline or DNS blocked is routine for a dev tool, not warn-worthy.
+				log.debug("Update check failed: {}", e.getMessage());
 			}
 
-			String assetUrl = findJarAsset(release);
-			if (assetUrl == null)
+			@Override
+			public void onResponse(Call call, Response response)
 			{
-				log.warn("Update {} found but release has no {} asset", tag, JAR_NAME);
-				return;
-			}
-
-			log.info("Updating OpenRune-DeveloperTools {} -> {}", current, latest);
-			Path staged = Files.createTempFile("openrune-devtools", ".jar");
-			download(assetUrl, staged);
-
-			List<Path> lockedTargets = new ArrayList<>();
-			for (String dir : CLIENT_DIRS)
-			{
-				File pluginDir = new File(System.getProperty("user.home"), dir + "/sideloaded-plugins");
-				if (!pluginDir.isDirectory())
+				try (Response r = response; ResponseBody body = r.body())
 				{
-					continue;
+					if (r.code() == 404)
+					{
+						// No release published yet; that is not an error.
+						return;
+					}
+					if (!r.isSuccessful() || body == null)
+					{
+						log.debug("Update check got HTTP {}", r.code());
+						return;
+					}
+					JsonObject release = new JsonParser().parse(body.string()).getAsJsonObject();
+					if (!release.has("tag_name"))
+					{
+						return;
+					}
+					String tag = release.get("tag_name").getAsString();
+					latestTag = tag;
+					String latest = tag.startsWith("v") ? tag.substring(1) : tag;
+					if (latest.equals(current))
+					{
+						log.info("OpenRune-DeveloperTools {} is up to date", current);
+						return;
+					}
+					if (!hasJarAsset(release))
+					{
+						log.info("Update {} found but release has no jar asset", tag);
+						return;
+					}
+					updateAvailable = true;
+					announce("OpenRune-DeveloperTools " + latest + " is available. "
+						+ "Download the jar from the plugin releases page and replace "
+						+ "the copy in your sideloaded-plugins folder: " + RELEASES_PAGE);
 				}
-				Path target = pluginDir.toPath().resolve(JAR_NAME);
-				try
+				catch (Exception e)
 				{
-					Files.copy(staged, target, StandardCopyOption.REPLACE_EXISTING);
-					log.info("Updated {}", target);
-				}
-				catch (IOException locked)
-				{
-					// Jar is loaded by this client; stage next to it and swap after exit
-					Path pending = pluginDir.toPath().resolve(JAR_NAME + ".new");
-					Files.copy(staged, pending, StandardCopyOption.REPLACE_EXISTING);
-					lockedTargets.add(target);
-					log.info("Staged update for locked jar {}", target);
+					log.debug("Update check failed parsing response", e);
 				}
 			}
-			Files.deleteIfExists(staged);
-
-			if (!lockedTargets.isEmpty())
-			{
-				scheduleSwapOnExit(lockedTargets);
-			}
-			updateApplied = true;
-			announce("OpenRune-DeveloperTools updated to " + latest
-				+ (lockedTargets.isEmpty() ? "." : ". Restart the client to load it."));
-		}
-		catch (Exception e)
-		{
-			log.warn("Update check failed", e);
-		}
+		});
 	}
 
 	private String currentVersion()
@@ -173,89 +165,22 @@ class UpdateChecker
 		return null;
 	}
 
-	private JsonObject fetchLatestRelease() throws IOException
-	{
-		HttpURLConnection conn = (HttpURLConnection) new URL(RELEASES_API).openConnection();
-		conn.setRequestProperty("Accept", "application/vnd.github+json");
-		conn.setConnectTimeout(10_000);
-		conn.setReadTimeout(10_000);
-		try (InputStream in = conn.getInputStream())
-		{
-			String body = new String(in.readAllBytes(), StandardCharsets.UTF_8);
-			return new JsonParser().parse(body).getAsJsonObject();
-		}
-		finally
-		{
-			conn.disconnect();
-		}
-	}
-
-	private static String findJarAsset(JsonObject release)
+	private static boolean hasJarAsset(JsonObject release)
 	{
 		JsonArray assets = release.getAsJsonArray("assets");
 		if (assets == null)
 		{
-			return null;
+			return false;
 		}
 		for (int i = 0; i < assets.size(); i++)
 		{
 			JsonObject asset = assets.get(i).getAsJsonObject();
-			if (JAR_NAME.equals(asset.get("name").getAsString()))
+			if (asset.has("name") && asset.get("name").getAsString().endsWith(".jar"))
 			{
-				return asset.get("browser_download_url").getAsString();
+				return true;
 			}
 		}
-		return null;
-	}
-
-	private static void download(String url, Path target) throws IOException
-	{
-		HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
-		conn.setInstanceFollowRedirects(true);
-		conn.setConnectTimeout(10_000);
-		conn.setReadTimeout(60_000);
-		try (InputStream in = conn.getInputStream())
-		{
-			Files.copy(in, target, StandardCopyOption.REPLACE_EXISTING);
-		}
-		finally
-		{
-			conn.disconnect();
-		}
-	}
-
-	/**
-	 * The running client holds a file lock on its own jar until the JVM dies, so
-	 * spawn a detached helper on shutdown that swaps in the staged copy afterwards.
-	 */
-	private static void scheduleSwapOnExit(List<Path> targets)
-	{
-		Runtime.getRuntime().addShutdownHook(new Thread(() ->
-		{
-			for (Path target : targets)
-			{
-				String jar = target.toString();
-				try
-				{
-					if (System.getProperty("os.name", "").toLowerCase().contains("win"))
-					{
-						new ProcessBuilder("cmd", "/c",
-							"ping -n 4 127.0.0.1 >nul & move /y \"" + jar + ".new\" \"" + jar + "\"")
-							.start();
-					}
-					else
-					{
-						new ProcessBuilder("sh", "-c",
-							"sleep 3; mv -f '" + jar + ".new' '" + jar + "'")
-							.start();
-					}
-				}
-				catch (IOException e)
-				{
-					// nothing left to do this late in shutdown
-				}
-			}
-		}, "openrune-update-swap"));
+		return false;
 	}
 
 	private void announce(String message)

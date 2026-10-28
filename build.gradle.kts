@@ -6,7 +6,7 @@ group = "com.openrune"
 
 // CI builds are versioned by run number and match the release tag (v<version>);
 // local builds get "-local" which disables the in-client update check.
-val baseVersion = "0.1.0"
+val baseVersion = "0.2.0"
 val runNumber: String? = System.getenv("GITHUB_RUN_NUMBER")
 version = if (runNumber != null) "$baseVersion-$runNumber" else "$baseVersion-local"
 
@@ -39,11 +39,19 @@ repositories {
 dependencies {
     if (useLocalClient) {
         compileOnly(files(clientJar!!))
+        testImplementation(files(clientJar!!))
     } else {
         compileOnly("net.runelite:client:latest.release")
+        testImplementation("net.runelite:client:latest.release")
     }
     compileOnly("org.projectlombok:lombok:1.18.30")
     annotationProcessor("org.projectlombok:lombok:1.18.30")
+
+    testImplementation(platform("org.junit:junit-bom:5.10.2"))
+    testImplementation("org.junit.jupiter:junit-jupiter")
+    testImplementation("org.mockito:mockito-core:5.11.0")
+    testImplementation("com.google.code.gson:gson:2.10.1")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
 tasks.jar {
@@ -73,21 +81,23 @@ fun sideloadTargets(): List<File> {
     return detected.ifEmpty { listOf(File(home, ".runelite/sideloaded-plugins")) }
 }
 
-// Copy the built jar into every client's sideloaded-plugins folder.
-// Runs automatically after jar; skipped on CI.
+// Copy the built jar into every detected client's sideloaded-plugins folder.
+// Deliberately NOT wired into `jar`: compiling and testing must never overwrite
+// client installs. Run `gradlew deploy` explicitly to install the build.
 val deploy = tasks.register("deploy") {
     dependsOn(tasks.jar)
     onlyIf { System.getenv("GITHUB_ACTIONS") == null }
     doLast {
         val jar = tasks.jar.get().archiveFile.get().asFile
         val locked = mutableListOf<File>()
-        for (target in sideloadTargets()) {
+        val targets = sideloadTargets()
+        for (target in targets) {
             target.mkdirs()
             // A running client holds its jar open on Windows. Deploy to the other
             // clients first, then report every target that could not be replaced.
             try {
                 jar.copyTo(File(target, jar.name), overwrite = true)
-                println("Deployed to $target")
+                println("Deployed ${jar.name} to $target")
             } catch (e: java.io.IOException) {
                 locked += target
             }
@@ -101,6 +111,6 @@ val deploy = tasks.register("deploy") {
     }
 }
 
-tasks.jar {
-    finalizedBy(deploy)
+tasks.test {
+    useJUnitPlatform()
 }

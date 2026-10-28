@@ -10,23 +10,25 @@ screenshots.
 ## Build and deploy
 
 ```
-gradlew jar
+gradlew build   # compile + run the unit/transport test suite, no side effects
+gradlew jar     # build the plugin jar only
+gradlew deploy  # build and copy the jar into every detected client's sideloaded-plugins folder
 ```
 
-That is the whole setup. The jar deploys itself to every client on your
-machine, by looking for the `sideloaded-plugins` folder each one creates in your
-home directory — `~/.runelite`, `~/.rsprox`, `~/.fluxious`, or a fork's own
-directory, with nothing to configure. The build prints where it deployed.
+Deployment is a separate, explicit task: building or testing never touches
+installed clients. `deploy` looks for the `sideloaded-plugins` folder each
+client creates in your home directory — `~/.runelite`, `~/.rsprox`,
+`~/.fluxious`, or a fork's own directory — and prints where it deployed.
 
 Deploying fails if one of those clients is running, because it holds its jar
 open. The other clients are still updated and the error names the ones that
 were not. A client only loads a new jar when it starts, so restart it after
-building.
+deploying.
 
 Two optional flags, for cases the default doesn't cover:
 
 ```
-gradlew jar -PsideloadDirs=.runelite,.myclient   # deploy to exactly these
+gradlew deploy -PsideloadDirs=.runelite,.myclient   # deploy to exactly these
 gradlew jar -PclientJar=/path/to/client-shaded.jar   # compile against a client's jar
 ```
 
@@ -39,6 +41,12 @@ then connect Claude:
 ```
 claude mcp add --transport http flux http://127.0.0.1:7780/mcp
 ```
+
+The server binds to the loopback interface only and refuses browser cross-origin
+POSTs (an `Origin` header that is not loopback is rejected), so a web page cannot
+drive your client. Request bodies are capped at 2 MiB. It is still an
+unauthenticated local control surface — treat anything that can POST to
+localhost as able to act in game.
 
 The AI calls these tools constantly — skip per-call permission prompts by allowing
 the whole server in your project's `.claude/settings.local.json`:
@@ -73,7 +81,9 @@ the last 100 calls in memory, so refreshing the page replays recent history.
 ## Releases
 
 Pushing to the `prod` branch builds the jar and publishes a GitHub release
-automatically.
+automatically. The in-plugin update check only announces that a newer release
+exists on this fork (in chat and the logs); it never downloads or installs
+anything by itself.
 
 ## Tools
 
@@ -88,6 +98,9 @@ automatically.
 | `get_widget_at` | Deepest visible widget at a canvas pixel, with parent chain |
 | `set_widget` | Live-edit a widget client-side: move, resize, hide, retext, recolor, then revalidate |
 | `get_client_state` | Game state, canvas size, mouse, player position/region, energy, weight, camera, menu-open flag |
+| `get_status` | Server + session status: plugin version, tool count, game state, tick, position — check this first when a tool behaves oddly |
+| `observe` | One client-thread pass: vitals, boosts, combat, inventory (with item ops), nearest NPCs/objects/ground items, dialogue. Optional `sections`: equipment, skills, players, projectiles |
+| `get_combat_state` | Cheap combat poll: in-combat flag (Idle Notifier timing), attackers, target, active prayers, ticks since last hit dealt/received |
 | `get_skills` | All skills: level, boosted level, xp, total level |
 
 ### Raw input
@@ -122,11 +135,26 @@ automatically.
 | `interact_npc` | Invoke a cache-defined NPC option (default Talk-to) |
 | `get_npc_menu` | Hover an NPC and read its live right-click menu, incl. server-added options |
 | `click_menu_option` | Click an entry of the currently built mini-menu |
-| `item_action` | Right-click an inventory item and click an option (Drop, Eat, Wield...) |
+| `item_action` | Invoke an item's own inventory op (Drop, Eat, Wield...) — works with the inventory tab closed |
 | `interact_object` | Nearest matching object, hover, click option (Chop down, Mine, Open...) |
+| `object_action` | Invoke a scene object's op directly by objectId + world x/y — object need not be on screen, mouse never moves |
 | `interact_player` | Hover a player and click an option (Trade with, Follow...) |
 | `widget_action` | Right-click any widget and click a menu option (spells, prayers, buttons) |
+| `set_prayer` | Toggle a prayer by name (exact Prayer enum name or fuzzy prayer-book label) via the real prayer-book widget |
 | `invoke_menu_action` | Raw `menuAction` escape hatch with explicit params |
+
+### Decision loop (observe → pick → act)
+
+| Tool | Description |
+|---|---|
+| `list_actions` | Everything actionable right now as a numbered menu — dialogue answers, NPC ops, object ops, ground-item takes, item ops — each with the tool + args that would run it |
+| `act` | Execute one menu entry by `id`. Rejects ids from menus older than `maxAgeTicks` (default 3) and revalidates the target (NPC still there and same id, item still on the tile, dialogue still open) before dispatch |
+
+`list_actions` answers "what can I do here" in one call instead of an agent
+guessing targets. Actors that target the local player are flagged `targetsMe`
+in `observe`/`list_npcs`, and NPCs carry `interactingIndex` when their target
+can be resolved. Destructive or two-target ops (drop, destroy, use) are never
+listed — use `item_action`/`invoke_menu_action` for those deliberately.
 
 ### Dialogue
 
@@ -162,4 +190,7 @@ automatically.
 
 | Tool | Description |
 |---|---|
-| `wait_for` | Block until a condition: idle, at_tile, npc_dead, dialogue, interface_open/closed, chat_message — checked every 100ms, returns immediately when met |
+| `wait_for` | Block until a condition: idle, at_tile, npc_dead, dialogue, interface_open/closed, chat_message, hitsplat, projectile, animation, spotanim, var, in_combat/out_of_combat, prayer — checked every 100ms, returns immediately when met. Event-based conditions only see new events after the call starts |
+
+All history tools report a `dropped` count — how many events were evicted from
+the bounded buffer — so truncation is visible instead of silent.

@@ -74,7 +74,36 @@ class McpEventRecorder
 	private final Map<String, Integer> lastSkillXp = new HashMap<>();
 	private final Map<String, Integer> lastBoostedLevels = new HashMap<>();
 	private final Map<Integer, Map<Integer, Integer>> lastContainerContents = new HashMap<>();
+	private final Map<String, Long> droppedByChannel = new HashMap<>();
 	private long seq = 1;
+	private int lastHitOnMeTick = -1;
+	private int lastMyHitTick = -1;
+
+	/**
+	 * Forget every history and per-session baseline. Called on logout/world hop so the
+	 * new session can't report phantom diffs or inherit a stale "in combat" state.
+	 */
+	synchronized void reset()
+	{
+		scripts.clear();
+		vars.clear();
+		varcs.clear();
+		projectiles.clear();
+		effects.clear();
+		chat.clear();
+		combat.clear();
+		experience.clear();
+		containers.clear();
+		sounds.clear();
+		lastIntValues.clear();
+		lastStrValues.clear();
+		lastSkillXp.clear();
+		lastBoostedLevels.clear();
+		lastContainerContents.clear();
+		droppedByChannel.clear();
+		lastHitOnMeTick = -1;
+		lastMyHitTick = -1;
+	}
 
 	synchronized void recordScript(int scriptId, Object[] arguments, int tick)
 	{
@@ -171,6 +200,32 @@ class McpEventRecorder
 		}
 		entry.addProperty("message", message);
 		push(chat, CHAT_BUFFER, entry);
+	}
+
+	/**
+	 * Track the last tick a hitsplat landed on the local player, and the last tick one the local
+	 * player dealt landed (on anything), for get_combat_state.
+	 */
+	synchronized void recordCombatTick(boolean onMe, boolean mine, int tick)
+	{
+		if (onMe)
+		{
+			lastHitOnMeTick = tick;
+		}
+		if (mine && !onMe)
+		{
+			lastMyHitTick = tick;
+		}
+	}
+
+	synchronized int lastHitOnMeTick()
+	{
+		return lastHitOnMeTick;
+	}
+
+	synchronized int lastMyHitTick()
+	{
+		return lastMyHitTick;
 	}
 
 	synchronized void recordHitsplat(int hitsplatType, int amount, String actorType, String actorName,
@@ -276,6 +331,7 @@ class McpEventRecorder
 		JsonObject result = new JsonObject();
 		result.addProperty("windowMs", sinceMs);
 		result.addProperty("total", matched.size());
+		result.addProperty("dropped", droppedFor("chat"));
 		result.add("events", tail(matched, limit));
 		return result;
 	}
@@ -299,6 +355,7 @@ class McpEventRecorder
 		JsonObject result = new JsonObject();
 		result.addProperty("windowMs", sinceMs);
 		result.addProperty("total", matched.size());
+		result.addProperty("dropped", droppedFor("projectile"));
 		result.add("events", tail(matched, limit));
 		return result;
 	}
@@ -328,6 +385,7 @@ class McpEventRecorder
 		JsonObject result = new JsonObject();
 		result.addProperty("windowMs", sinceMs);
 		result.addProperty("total", matched.size());
+		result.addProperty("dropped", droppedFor("effect"));
 		result.add("events", tail(matched, limit));
 		return result;
 	}
@@ -367,6 +425,7 @@ class McpEventRecorder
 		JsonObject result = new JsonObject();
 		result.addProperty("windowMs", sinceMs);
 		result.addProperty("total", matched.size());
+		result.addProperty("dropped", droppedFor("script"));
 		result.add("counts", countRows);
 		result.add("events", tail(matched, limit));
 		return result;
@@ -400,6 +459,7 @@ class McpEventRecorder
 		JsonObject result = new JsonObject();
 		result.addProperty("windowMs", sinceMs);
 		result.addProperty("total", matched.size());
+		result.addProperty("dropped", droppedFor("var"));
 		result.add("events", tail(matched, limit));
 		return result;
 	}
@@ -425,6 +485,7 @@ class McpEventRecorder
 		JsonObject result = new JsonObject();
 		result.addProperty("windowMs", sinceMs);
 		result.addProperty("total", matched.size());
+		result.addProperty("dropped", droppedFor("combat"));
 		result.add("events", tail(matched, limit));
 		return result;
 	}
@@ -448,6 +509,7 @@ class McpEventRecorder
 		JsonObject result = new JsonObject();
 		result.addProperty("windowMs", sinceMs);
 		result.addProperty("total", matched.size());
+		result.addProperty("dropped", droppedFor("experience"));
 		result.add("events", tail(matched, limit));
 		return result;
 	}
@@ -471,6 +533,7 @@ class McpEventRecorder
 		JsonObject result = new JsonObject();
 		result.addProperty("windowMs", sinceMs);
 		result.addProperty("total", matched.size());
+		result.addProperty("dropped", droppedFor("container"));
 		result.add("events", tail(matched, limit));
 		return result;
 	}
@@ -494,6 +557,7 @@ class McpEventRecorder
 		JsonObject result = new JsonObject();
 		result.addProperty("windowMs", sinceMs);
 		result.addProperty("total", matched.size());
+		result.addProperty("dropped", droppedFor("sound"));
 		result.add("events", tail(matched, limit));
 		return result;
 	}
@@ -533,6 +597,7 @@ class McpEventRecorder
 		JsonObject result = new JsonObject();
 		result.addProperty("windowMs", sinceMs);
 		result.addProperty("total", matched.size());
+		result.addProperty("dropped", droppedFor(channels));
 		result.add("events", tail(matched, limit));
 		return result;
 	}
@@ -566,6 +631,25 @@ class McpEventRecorder
 		return changes;
 	}
 
+	private long droppedFor(String channel)
+	{
+		return droppedByChannel.getOrDefault(channel, 0L);
+	}
+
+	private long droppedFor(Set<String> channels)
+	{
+		if (channels == null)
+		{
+			return droppedByChannel.values().stream().mapToLong(Long::longValue).sum();
+		}
+		long dropped = 0;
+		for (String channel : channels)
+		{
+			dropped += droppedFor(channel);
+		}
+		return dropped;
+	}
+
 	private JsonObject baseEntry(String channel, int tick)
 	{
 		JsonObject entry = new JsonObject();
@@ -576,12 +660,13 @@ class McpEventRecorder
 		return entry;
 	}
 
-	private static void push(Deque<JsonObject> buffer, int max, JsonObject entry)
+	private void push(Deque<JsonObject> buffer, int max, JsonObject entry)
 	{
 		buffer.addLast(entry);
 		while (buffer.size() > max)
 		{
 			buffer.removeFirst();
+			droppedByChannel.merge(entry.get("channel").getAsString(), 1L, Long::sum);
 		}
 	}
 

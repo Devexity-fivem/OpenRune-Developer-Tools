@@ -38,6 +38,7 @@ import java.io.OutputStream;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import lombok.extern.slf4j.Slf4j;
@@ -52,10 +53,14 @@ class McpHttpServer
 	static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
 
 	private static final String PROTOCOL_VERSION = "2025-03-26";
+	private static final String SERVER_NAME = "openrune-devtools";
+	/** Tool-call requests are tiny; refuse huge bodies instead of buffering them. */
+	private static final int MAX_REQUEST_BYTES = 2 * 1024 * 1024;
 
 	private final int port;
 	private final McpTools tools;
 	private final McpActivityLog activityLog = new McpActivityLog();
+	private final long startedAt = System.currentTimeMillis();
 
 	private HttpServer server;
 	private ExecutorService executor;
@@ -99,6 +104,12 @@ class McpHttpServer
 		}
 	}
 
+	/** The port the server actually bound (differs from the configured port when it was 0). */
+	int boundPort()
+	{
+		return server != null ? server.getAddress().getPort() : -1;
+	}
+
 	private void handle(HttpExchange exchange) throws IOException
 	{
 		try
@@ -108,12 +119,26 @@ class McpHttpServer
 				respond(exchange, 405, "{\"error\":\"POST only\"}");
 				return;
 			}
+			if (!localOrigin(exchange))
+			{
+				// Browsers always send Origin on cross-origin POSTs; MCP clients send none.
+				// Without this check any web page could form-POST tool calls to the loopback
+				// server (the response is unreadable to it, but the action still runs).
+				respond(exchange, 403, "{\"error\":\"cross-origin requests are not allowed\"}");
+				return;
+			}
 
-			String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
-			JsonObject message;
+			byte[] bodyBytes = exchange.getRequestBody().readNBytes(MAX_REQUEST_BYTES + 1);
+			if (bodyBytes.length > MAX_REQUEST_BYTES)
+			{
+				respond(exchange, 413, "{\"error\":\"request too large\"}");
+				return;
+			}
+			String body = new String(bodyBytes, StandardCharsets.UTF_8);
+			JsonElement parsed;
 			try
 			{
-				message = new JsonParser().parse(body).getAsJsonObject();
+				parsed = new JsonParser().parse(body);
 			}
 			catch (RuntimeException e)
 			{
@@ -121,42 +146,38 @@ class McpHttpServer
 				return;
 			}
 
-			// Notifications (no id) get acknowledged with 202 and no body
-			if (!message.has("id"))
+			if (parsed.isJsonArray())
 			{
-				String method = message.has("method") ? message.get("method").getAsString() : "";
-				if ("notifications/cancelled".equals(method))
+				// JSON-RPC batch: some streamable-HTTP clients batch requests/notifications.
+				JsonArray responses = new JsonArray();
+				boolean onlyNotifications = true;
+				for (JsonElement element : parsed.getAsJsonArray())
 				{
-					// User stopped the task in the MCP client; abort the in-flight action
-					cancelActiveTool();
+					JsonObject response = handleMessage(element);
+					if (response != null)
+					{
+						onlyNotifications = false;
+						responses.add(response);
+					}
 				}
-				exchange.sendResponseHeaders(202, -1);
-				exchange.close();
+				if (onlyNotifications)
+				{
+					exchange.sendResponseHeaders(202, -1);
+					exchange.close();
+				}
+				else
+				{
+					respond(exchange, 200, GSON.toJson(responses));
+				}
 				return;
 			}
 
-			JsonElement id = message.get("id");
-			String method = message.has("method") ? message.get("method").getAsString() : "";
-			JsonObject params = message.has("params") && message.get("params").isJsonObject()
-				? message.getAsJsonObject("params")
-				: new JsonObject();
-
-			JsonObject response;
-			try
+			JsonObject response = handleMessage(parsed);
+			if (response == null)
 			{
-				response = new JsonObject();
-				response.addProperty("jsonrpc", "2.0");
-				response.add("id", id);
-				response.add("result", dispatch(method, params));
-			}
-			catch (MethodNotFoundException e)
-			{
-				response = errorResponse(id, -32601, e.getMessage());
-			}
-			catch (Exception e)
-			{
-				log.debug("MCP request failed", e);
-				response = errorResponse(id, -32603, e.getMessage() == null ? e.toString() : e.getMessage());
+				exchange.sendResponseHeaders(202, -1);
+				exchange.close();
+				return;
 			}
 			respond(exchange, 200, GSON.toJson(response));
 		}
@@ -164,6 +185,91 @@ class McpHttpServer
 		{
 			log.warn("Unhandled MCP server error", e);
 			exchange.close();
+		}
+	}
+
+	/**
+	 * Whether the request may proceed: no Origin header (MCP clients) or a loopback Origin
+	 * (same-origin dashboard fetches). Anything else is a cross-site browser POST.
+	 */
+	private static boolean localOrigin(HttpExchange exchange)
+	{
+		String origin = exchange.getRequestHeaders().getFirst("Origin");
+		if (origin == null || origin.isEmpty())
+		{
+			return true;
+		}
+		String host;
+		try
+		{
+			host = new java.net.URI(origin).getHost();
+		}
+		catch (Exception e)
+		{
+			return false;
+		}
+		if (host == null)
+		{
+			return false;
+		}
+		String h = host.toLowerCase(Locale.ROOT);
+		return "localhost".equals(h) || "127.0.0.1".equals(h)
+			|| "::1".equals(h) || "[::1]".equals(h) || h.endsWith(".localhost");
+	}
+
+	/** Handle one JSON-RPC message; null return means it was a notification (202, no body). */
+	private JsonObject handleMessage(JsonElement message)
+	{
+		if (!message.isJsonObject())
+		{
+			return errorResponse(null, -32600, "Invalid request: expected a JSON-RPC object");
+		}
+		JsonObject msg = message.getAsJsonObject();
+
+		// Notifications (no id) get acknowledged with 202 and no body
+		if (!msg.has("id"))
+		{
+			String method = msg.has("method") && msg.get("method").isJsonPrimitive()
+				? msg.get("method").getAsString() : "";
+			if ("notifications/cancelled".equals(method))
+			{
+				// User stopped the task in the MCP client; abort the in-flight action
+				cancelActiveTool();
+			}
+			return null;
+		}
+
+		JsonElement id = msg.get("id");
+		JsonElement methodElement = msg.get("method");
+		if (methodElement == null || !methodElement.isJsonPrimitive())
+		{
+			return errorResponse(id, -32600, "Invalid request: missing method");
+		}
+		String method = methodElement.getAsString();
+		JsonObject params = msg.has("params") && msg.get("params").isJsonObject()
+			? msg.getAsJsonObject("params")
+			: new JsonObject();
+
+		try
+		{
+			JsonObject response = new JsonObject();
+			response.addProperty("jsonrpc", "2.0");
+			response.add("id", id);
+			response.add("result", dispatch(method, params));
+			return response;
+		}
+		catch (MethodNotFoundException e)
+		{
+			return errorResponse(id, -32601, e.getMessage());
+		}
+		catch (InvalidParamsException e)
+		{
+			return errorResponse(id, -32602, e.getMessage());
+		}
+		catch (Exception e)
+		{
+			log.debug("MCP request failed", e);
+			return errorResponse(id, -32603, e.getMessage() == null ? e.toString() : e.getMessage());
 		}
 	}
 
@@ -180,18 +286,25 @@ class McpHttpServer
 				capabilities.add("tools", new JsonObject());
 				result.add("capabilities", capabilities);
 				JsonObject serverInfo = new JsonObject();
-				serverInfo.addProperty("name", "flux-client-mcp");
-				serverInfo.addProperty("version", "0.1.0");
+				serverInfo.addProperty("name", SERVER_NAME);
+				serverInfo.addProperty("version", serverVersion());
 				result.add("serverInfo", serverInfo);
 				result.addProperty("instructions",
-					"RuneLite game client control. Prefer the one-call interaction tools over screenshots and raw clicks:\n"
-					+ "- inventory item (drop/eat/wield/use): item_action - NEVER screenshot or click_component for this\n"
-					+ "- scene object (chop/mine/open/bank): interact_object\n"
+					"RuneLite game client control for testing private servers.\n"
+					+ "Reading state:\n"
+					+ "- observe: one client-thread pass - vitals, combat, inventory, nearby NPCs/objects/items, dialogue\n"
+					+ "- get_combat_state: cheap combat poll (in combat, attackers, target, prayers, ticks since hits)\n"
+					+ "- list_npcs / list_objects / list_ground_items / get_inventory / get_dialogue answer focused questions\n"
+					+ "- get_timeline + per-channel history tools explain what just happened (projectiles, hitsplats, vars, xp)\n"
+					+ "Acting:\n"
+					+ "- list_actions: every action available now as a numbered menu; act(id) runs one - refuses stale menus\n"
+					+ "- inventory item (drop/eat/wield/use): item_action - works with the inventory tab closed\n"
+					+ "- scene object: object_action (no hover needed) or interact_object (on-screen objects)\n"
 					+ "- NPC: interact_npc, or get_npc_menu + click_menu_option for server-added options\n"
-					+ "- other player (trade/follow): interact_player\n"
-					+ "- widget right-click option: widget_action\n"
-					+ "Data tools (list_*, get_*, dump_interface) answer questions about game state - use them instead of screenshots.\n"
-					+ "To wait for something to finish (walking somewhere, combat, an interface opening, a game message), call wait_for - never poll with screenshots or repeated list calls.\n"
+					+ "- other player (trade/follow): interact_player; widget right-click option: widget_action\n"
+					+ "- prayer on/off: set_prayer; raw escape hatch: invoke_menu_action\n"
+					+ "Waiting: wait_for blocks until a condition is met (idle, arrival, npc death, dialogue, interface,\n"
+					+ "chat, hitsplat, projectile, animation, var, combat) - never poll with screenshots or repeated calls.\n"
 					+ "Only call screenshot when the user explicitly asks to SEE something or for visual layout verification.");
 				return result;
 			}
@@ -205,6 +318,10 @@ class McpHttpServer
 			}
 			case "tools/call":
 			{
+				if (!params.has("name") || !params.get("name").isJsonPrimitive())
+				{
+					throw new InvalidParamsException("Missing params.name for tools/call");
+				}
 				String name = params.get("name").getAsString();
 				JsonObject args = params.has("arguments") && params.get("arguments").isJsonObject()
 					? params.getAsJsonObject("arguments")
@@ -263,13 +380,24 @@ class McpHttpServer
 					}
 				}
 			}
-			respond(exchange, 200, GSON.toJson(activityLog.since(after)));
+			JsonObject payload = activityLog.since(after);
+			payload.add("tools", tools.toolNames());
+			payload.addProperty("server", SERVER_NAME);
+			payload.addProperty("version", serverVersion());
+			payload.addProperty("uptimeMs", System.currentTimeMillis() - startedAt);
+			respond(exchange, 200, GSON.toJson(payload));
 		}
 		catch (Exception e)
 		{
 			log.warn("MCP log endpoint error", e);
 			exchange.close();
 		}
+	}
+
+	private static String serverVersion()
+	{
+		String version = McpHttpServer.class.getPackage().getImplementationVersion();
+		return version != null ? version : "dev";
 	}
 
 	private void handleDashboard(HttpExchange exchange) throws IOException
@@ -346,6 +474,14 @@ class McpHttpServer
 	private static class MethodNotFoundException extends Exception
 	{
 		MethodNotFoundException(String message)
+		{
+			super(message);
+		}
+	}
+
+	private static class InvalidParamsException extends Exception
+	{
+		InvalidParamsException(String message)
 		{
 			super(message);
 		}

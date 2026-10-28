@@ -260,7 +260,7 @@
 	<div class="empty" id="empty">
 		<div class="big">⌖</div>
 		Waiting for AI tool calls…<br>
-		<small>connect with: <code>claude mcp add --transport http flux http://127.0.0.1:7780/mcp</code></small>
+		<small>point any MCP client at <code>http://127.0.0.1:7780/mcp</code> (streamable HTTP)</small>
 	</div>
 </div>
 
@@ -398,6 +398,12 @@ function render(entry) {
 		}
 	}
 
+	if (entry.imagesDropped) {
+		const note = document.createElement("div");
+		note.className = "oneline";
+		note.textContent = "(screenshot data evicted — image history over its memory budget)";
+		div.append(note);
+	}
 	if ((entry.images || []).length) {
 		const shots = document.createElement("div");
 		shots.className = "shots";
@@ -432,11 +438,13 @@ async function poll() {
 		if (!paused) {
 			const resp = await fetch("/log?after=" + after);
 			const data = await resp.json();
+			for (const tool of data.tools || []) registerTool(tool);
 			for (const entry of data.entries) render(entry);
 			after = data.last;
 		}
 		dot.classList.add("live");
-		statusText.textContent = paused ? "paused" : "live";
+		statusText.textContent = (paused ? "paused" : "live")
+			+ (data.server ? " · " + data.server + " " + (data.version || "") : "");
 	} catch (e) {
 		dot.classList.remove("live");
 		statusText.textContent = "disconnected — is the plugin on?";

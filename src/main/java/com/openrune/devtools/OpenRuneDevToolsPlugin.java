@@ -38,6 +38,7 @@ import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Actor;
 import net.runelite.api.ActorSpotAnim;
 import net.runelite.api.Client;
+import net.runelite.api.GameState;
 import net.runelite.api.Hitsplat;
 import net.runelite.api.Item;
 import net.runelite.api.ItemComposition;
@@ -48,6 +49,7 @@ import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.events.AnimationChanged;
 import net.runelite.api.events.AreaSoundEffectPlayed;
 import net.runelite.api.events.ChatMessage;
+import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.GraphicChanged;
 import net.runelite.api.events.HitsplatApplied;
 import net.runelite.api.events.ItemContainerChanged;
@@ -60,6 +62,7 @@ import net.runelite.api.events.VarClientIntChanged;
 import net.runelite.api.events.VarClientStrChanged;
 import net.runelite.api.events.VarbitChanged;
 import net.runelite.client.callback.ClientThread;
+import okhttp3.OkHttpClient;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.events.ConfigChanged;
@@ -88,6 +91,9 @@ public class OpenRuneDevToolsPlugin extends Plugin
 	@Inject
 	private OpenRuneDevToolsConfig config;
 
+	@Inject
+	private OkHttpClient okHttpClient;
+
 	private McpHttpServer server;
 	private McpEventRecorder recorder;
 	private ItemIconTool itemIconTool;
@@ -103,7 +109,7 @@ public class OpenRuneDevToolsPlugin extends Plugin
 		tryStartServer();
 		if (config.autoUpdate())
 		{
-			new UpdateChecker(client, clientThread).checkAsync();
+			new UpdateChecker(client, clientThread, okHttpClient).checkAsync();
 		}
 	}
 
@@ -269,6 +275,7 @@ public class OpenRuneDevToolsPlugin extends Plugin
 			return;
 		}
 		Hitsplat hitsplat = event.getHitsplat();
+		recorder.recordCombatTick(actor == client.getLocalPlayer(), hitsplat.isMine(), client.getTickCount());
 		recorder.recordHitsplat(hitsplat.getHitsplatType(),
 			hitsplat.getAmount(),
 			actor instanceof NPC ? "npc" : "player",
@@ -329,6 +336,19 @@ public class OpenRuneDevToolsPlugin extends Plugin
 		Actor source = event.getSource();
 		recorder.recordSound("areaSound", event.getSoundId(), event.getSceneX(), event.getSceneY(),
 			source != null ? source.getName() : null, client.getTickCount());
+	}
+
+	@Subscribe
+	public void onGameStateChanged(GameStateChanged event)
+	{
+		// Forget per-session baselines so a hop/relog doesn't report phantom
+		// changes or keep a stale "in combat" state.
+		if (recorder != null && event.getGameState() != GameState.LOGGED_IN
+			&& event.getGameState() != GameState.LOADING)
+		{
+			recorder.reset();
+			seenProjectiles.clear();
+		}
 	}
 
 	@Subscribe

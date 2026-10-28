@@ -37,9 +37,12 @@ import java.util.Deque;
 class McpActivityLog
 {
 	private static final int MAX_ENTRIES = 100;
+	/** Screenshots are big; keep at most this many base64 bytes across the buffer. */
+	private static final long MAX_IMAGE_BYTES = 16L * 1024 * 1024;
 
 	private final Deque<JsonObject> entries = new ArrayDeque<>();
 	private long nextId = 1;
+	private long imageBytes;
 
 	synchronized void record(String tool, JsonObject args, JsonObject result, long durationMs)
 	{
@@ -75,12 +78,44 @@ class McpActivityLog
 		}
 		entry.add("texts", texts);
 		entry.add("images", images);
+		for (JsonElement image : images)
+		{
+			imageBytes += image.getAsString().length();
+		}
 
 		entries.addLast(entry);
 		while (entries.size() > MAX_ENTRIES)
 		{
-			entries.removeFirst();
+			releaseImageBytes(entries.removeFirst());
 		}
+		// Bound total retained screenshot data: drop image payloads oldest-first,
+		// keeping the entry itself so the call history stays complete.
+		if (imageBytes > MAX_IMAGE_BYTES)
+		{
+			for (JsonObject e : entries)
+			{
+				if (imageBytes <= MAX_IMAGE_BYTES)
+				{
+					break;
+				}
+				releaseImageBytes(e);
+			}
+		}
+	}
+
+	private void releaseImageBytes(JsonObject entry)
+	{
+		JsonArray images = entry.getAsJsonArray("images");
+		if (images == null || images.size() == 0)
+		{
+			return;
+		}
+		for (JsonElement image : images)
+		{
+			imageBytes -= image.getAsString().length();
+		}
+		entry.add("images", new JsonArray());
+		entry.addProperty("imagesDropped", true);
 	}
 
 	synchronized JsonObject since(long afterId)

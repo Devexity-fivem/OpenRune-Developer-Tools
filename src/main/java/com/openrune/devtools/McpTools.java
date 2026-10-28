@@ -51,7 +51,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -63,6 +66,7 @@ import net.runelite.api.ActorSpotAnim;
 import net.runelite.api.Client;
 import net.runelite.api.DecorativeObject;
 import net.runelite.api.GameObject;
+import net.runelite.api.GameState;
 import net.runelite.api.GroundObject;
 import net.runelite.api.Item;
 import net.runelite.api.ItemComposition;
@@ -74,6 +78,7 @@ import net.runelite.api.NPCComposition;
 import net.runelite.api.ObjectComposition;
 import net.runelite.api.Perspective;
 import net.runelite.api.Player;
+import net.runelite.api.Prayer;
 import net.runelite.api.Projectile;
 import net.runelite.api.Scene;
 import net.runelite.api.Skill;
@@ -82,12 +87,15 @@ import net.runelite.api.TileItem;
 import net.runelite.api.TileObject;
 import net.runelite.api.WallObject;
 import net.runelite.api.gameval.InterfaceID;
+import net.runelite.api.gameval.InventoryID;
+import net.runelite.api.gameval.VarPlayerID;
 import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.widgets.Widget;
 import net.runelite.api.widgets.WidgetUtil;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.ui.DrawManager;
+import net.runelite.client.util.Text;
 
 /**
  * Implements the MCP tools exposed by {@link OpenRuneDevToolsPlugin}: screenshots,
@@ -152,7 +160,27 @@ class McpTools
 		{
 			throw new IllegalArgumentException("Unknown tool: " + name);
 		}
+		JsonObject schema = def.inputSchema;
+		if (schema.has("required"))
+		{
+			for (JsonElement required : schema.getAsJsonArray("required"))
+			{
+				String key = required.getAsString();
+				if (!args.has(key) || args.get(key).isJsonNull())
+				{
+					throw new IllegalArgumentException("Missing required argument '" + key + "' for " + name);
+				}
+			}
+		}
 		return def.handler.run(args);
+	}
+
+	/** Registered tool names, for the dashboard filter. */
+	JsonArray toolNames()
+	{
+		JsonArray names = new JsonArray();
+		tools.keySet().forEach(names::add);
+		return names;
 	}
 
 	private void register(String name, String description, JsonObject inputSchema, ToolHandler handler)
@@ -230,6 +258,52 @@ class McpTools
 			"Get game state, canvas size, resized/fixed mode, mouse position, player world position/region, run energy, weight, camera yaw/pitch/zoom and whether a right-click menu is open.",
 			schema(props()),
 			args -> textResult(getClientState()));
+
+		register("get_status",
+			"Server and session status for diagnostics: plugin version, port, uptime, tool count, game state and (when logged in) tick + player position. Use to confirm requests reach the plugin before trusting failures.",
+			schema(props()),
+			args -> textResult(getStatus()));
+
+		register("get_combat_state",
+			"One cheap call for whether the local player is fighting, moving or idle: hp/prayer points, ticks since a hitsplat landed on you and since one you dealt landed, inCombat (either within 8 ticks, Idle Notifier's rule), moving/animating, walk destination, the NPC you are attacking plus every NPC/player attacking you, and active prayers.",
+			schema(props()),
+			args -> textResult(getCombatState()));
+
+		register("set_prayer",
+			"Turn a prayer on or off in ONE call, without opening the prayer tab: e.g. prayer PROTECT_FROM_MAGIC, on true. Names are RuneLite Prayer enum names (PROTECT_FROM_MISSILES, PROTECT_FROM_MELEE, EAGLE_EYE, RIGOUR...). No-op when it is already in that state. Returns the active prayers afterwards.",
+			schema(props(
+				"prayer", "string", "Prayer enum name, e.g. PROTECT_FROM_MAGIC",
+				"on", "boolean", "true to activate (default), false to deactivate"),
+				"prayer"),
+			args -> textResult(setPrayer(args)));
+
+		register("observe",
+			"Everything a decision loop or test reads each step, in ONE client-thread pass: tick, position, hp/prayer, run, combat state, inventory with each item's options, nearest NPCs/interactive objects/ground items, dialogue. Use instead of calling get_client_state, get_skills, get_inventory, list_* and get_dialogue separately.",
+			schema(props(
+				"maxDistance", "integer", "Only things within this many tiles (default 15)",
+				"maxNpcs", "integer", "Nearest NPCs to include (default 10)",
+				"maxObjects", "integer", "Nearest interactive objects to include (default 10)",
+				"maxItems", "integer", "Nearest ground items to include (default 6)",
+				"sections", "array", "Extra sections to include: equipment, skills, players, projectiles (none by default)")),
+			args -> textResult(observe(args)));
+
+		register("list_actions",
+			"Every action available right now as a numbered menu with plain-language labels (\"Attack Goblin (lvl 2, 3 tiles)\", \"eat Shark\", dialogue options), each with the tool + args that perform it. Built for small decision models that pick from a list. Run one with act(id). While a dialogue options menu is open, only its options are listed.",
+			schema(props(
+				"maxDistance", "integer", "Only things within this many tiles (default 15)",
+				"maxActions", "integer", "Cap on menu length (default 40)",
+				"dedupe", "boolean", "Keep only the nearest of identical actions, e.g. one 'Attack Goblin' (default true)",
+				"includeObservation", "boolean", "Also return the observe snapshot the menu was built from")),
+			args -> textResult(listActions(args)));
+
+		register("act",
+			"Run action `id` from the last list_actions menu. Fails if that menu is older than maxAgeTicks, and re-validates the target right before acting (NPC identity, object still on its tile, ground item still there, dialogue still open) so a stale choice never runs. Optional args are merged into the stored call - needed for enter_input (text).",
+			schema(props(
+				"id", "integer", "Action id from list_actions",
+				"maxAgeTicks", "integer", "Refuse menus older than this many game ticks (default 3)",
+				"args", "object", "Optional overrides merged into the stored tool args (e.g. text for enter_input)"),
+				"id"),
+			args -> textResult(act(args)));
 
 		register("get_skills",
 			"Local player skills: level, boosted level and xp per skill, plus total level. Hitpoints boosted level = current HP.",
@@ -408,6 +482,17 @@ class McpTools
 				"nameFilter", "string", "Case-insensitive object name substring; nearest match wins (used if objectId absent)",
 				"option", "string", "Menu option to click, e.g. Chop down, Mine, Bank, Open. Default: the object's first action")),
 			args -> textResult(interactObject(args)));
+
+		register("object_action",
+			"Invoke a scene object's option directly at its world coordinates - the object need not be on screen and the mouse never moves. Same menu entry the client sends (scene x/y + object id). Use interact_object instead when you want a real hover+click.",
+			schema(props(
+				"objectId", "integer", "Object id from list_objects or observe",
+				"x", "integer", "World x of the object's tile",
+				"y", "integer", "World y of the object's tile",
+				"plane", "integer", "Plane 0-3 (default: current plane)",
+				"option", "string", "Menu option to invoke, e.g. Chop down, Bank, Open"),
+				"objectId", "x", "y", "option"),
+			args -> textResult(invokeObjectOp(args)));
 
 		register("interact_player",
 			"Interact with another player in ONE call - no screenshot needed. Hovers the player and clicks the matching right-click option, e.g. Trade with.",
@@ -603,17 +688,25 @@ class McpTools
 		// ---- waiting ----
 
 		register("wait_for",
-			"Block until a game condition is met, checked every 100ms - returns the moment it happens. Use this after walk_to/interact/attack instead of taking screenshots or guessing delays. Returns met:false with current state on timeout.",
+			"Block until a game condition is met, checked every 100ms - returns the moment it happens. Use this after walk_to/interact/attack instead of taking screenshots or guessing delays. Event-based conditions only see NEW events since the call started. Returns met:false with current state on timeout.",
 			schema(props(
-				"condition", "string", "What to wait for: idle (player stopped animating/moving), at_tile (arrived at x/y), npc_dead (npcIndex/npcName), dialogue (any dialogue opened), interface_open / interface_closed (interfaceId), chat_message (textContains appeared)",
+				"condition", "string", "What to wait for: idle, at_tile, npc_dead, dialogue, interface_open / interface_closed, chat_message, hitsplat, projectile, animation, spotanim, var, in_combat, out_of_combat, prayer",
 				"timeoutMs", "integer", "Give up after this long (default 10000, max 60000)",
 				"x", "integer", "at_tile: world x",
 				"y", "integer", "at_tile: world y",
 				"range", "integer", "at_tile: max tiles away to count as arrived (default 1)",
-				"npcIndex", "integer", "npc_dead: NPC index from list_npcs",
-				"npcName", "string", "npc_dead: NPC name substring",
+				"npcIndex", "integer", "npc_dead/animation/spotanim: NPC index from list_npcs",
+				"npcName", "string", "npc_dead/animation/spotanim: NPC name substring",
 				"interfaceId", "integer", "interface_open/closed: interface group id",
-				"textContains", "string", "chat_message: case-insensitive substring to watch for"),
+				"textContains", "string", "chat_message: case-insensitive substring to watch for",
+				"actorName", "string", "hitsplat/animation/spotanim: actor name substring (default any)",
+				"animationId", "integer", "animation: exact animation id to wait for",
+				"projectileId", "integer", "projectile: exact projectile (gfx) id to wait for",
+				"type", "string", "var: varbit, varp, varcint or varcstr",
+				"id", "integer", "var: varbit/varp/varc id",
+				"value", "integer", "var: value to wait for (exact match)",
+				"prayer", "string", "prayer: Prayer enum name, e.g. PROTECT_FROM_MAGIC",
+				"on", "boolean", "prayer: wait for active (default true) or inactive"),
 				"condition"),
 			this::waitFor);
 	}
@@ -808,6 +901,260 @@ class McpTools
 		});
 	}
 
+	/**
+	 * Server/session status a caller can check before blaming a tool failure on the
+	 * game: plugin version, port, uptime, tool count, game state, tick and position.
+	 */
+	private JsonElement getStatus() throws Exception
+	{
+		JsonObject result = new JsonObject();
+		String version = McpTools.class.getPackage().getImplementationVersion();
+		result.addProperty("server", "openrune-devtools");
+		result.addProperty("version", version != null ? version : "dev");
+		result.addProperty("toolCount", tools.size());
+		JsonObject session = onClientThread(() ->
+		{
+			JsonObject o = new JsonObject();
+			o.addProperty("gameState", client.getGameState().name());
+			o.addProperty("tick", client.getTickCount());
+			Player local = client.getLocalPlayer();
+			o.addProperty("loggedIn", local != null);
+			if (local != null && local.getWorldLocation() != null)
+			{
+				WorldPoint wp = local.getWorldLocation();
+				o.addProperty("worldX", wp.getX());
+				o.addProperty("worldY", wp.getY());
+				o.addProperty("plane", wp.getPlane());
+				o.addProperty("regionId", wp.getRegionID());
+			}
+			return o;
+		});
+		result.add("client", session);
+		return result;
+	}
+
+	/** Ticks a monster may take between attacks before combat counts as over (Idle Notifier). */
+	private static final int COMBAT_WINDOW_TICKS = 8;
+
+	private JsonElement getCombatState() throws Exception
+	{
+		return onClientThread(this::combatStateJson);
+	}
+
+	/** The get_combat_state payload. Must be called on the client thread. */
+	private JsonObject combatStateJson()
+	{
+		JsonObject o = new JsonObject();
+		Player local = client.getLocalPlayer();
+		if (local == null)
+		{
+			o.addProperty("loggedIn", false);
+			return o;
+		}
+		int tick = client.getTickCount();
+		int onMe = recorder.lastHitOnMeTick();
+		int mine = recorder.lastMyHitTick();
+		int sinceOnMe = onMe < 0 ? -1 : tick - onMe;
+		int sinceMine = mine < 0 ? -1 : tick - mine;
+		o.addProperty("loggedIn", true);
+		o.addProperty("tick", tick);
+		o.addProperty("hp", client.getBoostedSkillLevel(Skill.HITPOINTS));
+		o.addProperty("hpMax", client.getRealSkillLevel(Skill.HITPOINTS));
+		o.addProperty("prayerPoints", client.getBoostedSkillLevel(Skill.PRAYER));
+		o.addProperty("prayerPointsMax", client.getRealSkillLevel(Skill.PRAYER));
+		o.addProperty("ticksSinceHitOnMe", sinceOnMe);
+		o.addProperty("ticksSinceMyHit", sinceMine);
+		o.addProperty("inCombat", (sinceOnMe >= 0 && sinceOnMe <= COMBAT_WINDOW_TICKS)
+			|| (sinceMine >= 0 && sinceMine <= COMBAT_WINDOW_TICKS));
+		o.addProperty("animating", local.getAnimation() != -1);
+		o.addProperty("moving", local.getPoseAnimation() != local.getIdlePoseAnimation());
+		LocalPoint dest = client.getLocalDestinationLocation();
+		if (dest != null)
+		{
+			WorldPoint d = WorldPoint.fromLocal(client, dest);
+			o.addProperty("destination", d.getX() + "," + d.getY() + "," + d.getPlane());
+		}
+		Actor target = local.getInteracting();
+		if (target != null)
+		{
+			o.addProperty("target", target.getName());
+			if (target instanceof NPC)
+			{
+				NPC npc = (NPC) target;
+				o.addProperty("targetIndex", npc.getIndex());
+				o.addProperty("targetNpcId", npc.getId());
+				o.addProperty("targetDead", npc.isDead());
+				if (npc.getHealthScale() > 0)
+				{
+					o.addProperty("targetHealthPercent", npc.getHealthRatio() * 100 / npc.getHealthScale());
+				}
+			}
+		}
+		WorldPoint me = local.getWorldLocation();
+		JsonArray attackers = new JsonArray();
+		for (NPC npc : client.getNpcs())
+		{
+			if (npc.getInteracting() == local && !npc.isDead())
+			{
+				attackers.add(describeAttacker(npc, me));
+			}
+		}
+		for (Player player : client.getPlayers())
+		{
+			if (player != null && player != local && player.getInteracting() == local && !player.isDead())
+			{
+				attackers.add(describeAttacker(player, me));
+			}
+		}
+		o.add("attackers", attackers);
+		o.add("prayers", activePrayers());
+		return o;
+	}
+
+	private static JsonObject describeAttacker(Actor actor, WorldPoint me)
+	{
+		JsonObject a = new JsonObject();
+		a.addProperty("type", actor instanceof NPC ? "npc" : "player");
+		a.addProperty("name", actor.getName());
+		if (actor instanceof NPC)
+		{
+			a.addProperty("index", ((NPC) actor).getIndex());
+			a.addProperty("npcId", ((NPC) actor).getId());
+		}
+		a.addProperty("combatLevel", actor.getCombatLevel());
+		WorldPoint wp = actor.getWorldLocation();
+		if (me != null && wp != null)
+		{
+			a.addProperty("distance", me.distanceTo(wp));
+		}
+		if (actor.getHealthScale() > 0 && actor.getHealthRatio() > -1)
+		{
+			a.addProperty("healthPercent", actor.getHealthRatio() * 100 / actor.getHealthScale());
+		}
+		return a;
+	}
+
+	/** Active prayers as enum names. Must be called on the client thread. */
+	private JsonArray activePrayers()
+	{
+		JsonArray active = new JsonArray();
+		for (Prayer prayer : Prayer.values())
+		{
+			if (client.isPrayerActive(prayer))
+			{
+				active.add(prayer.name());
+			}
+		}
+		return active;
+	}
+
+	/**
+	 * Widget ids of the prayer-book interfaces to search for a named prayer: the
+	 * standard book's numbered rows, then every loaded widget in the alternate
+	 * (Ruinous) prayer book, whose child ids differ across revisions.
+	 */
+	private List<Widget> prayerBookWidgets()
+	{
+		List<Widget> widgets = new ArrayList<>();
+		for (int i = 0; i < 30; i++)
+		{
+			Widget w = client.getWidget(InterfaceID.Prayerbook.PRAYER1 + i);
+			if (w != null)
+			{
+				widgets.add(w);
+			}
+		}
+		// The Ruinous/alternate book renders prayers under its god subtrees; collect
+		// all loaded descendants rather than hardcoding component ids.
+		Widget horror = client.getWidget(InterfaceID.HorrorPrayerbooks.CONTENTS);
+		if (horror == null)
+		{
+			horror = client.getWidget(InterfaceID.HorrorPrayerbooks.UNIVERSE);
+		}
+		if (horror != null)
+		{
+			Deque<Widget> queue = new ArrayDeque<>();
+			queue.add(horror);
+			while (!queue.isEmpty())
+			{
+				Widget w = queue.poll();
+				widgets.add(w);
+				enqueueChildren(queue, w.getStaticChildren());
+				enqueueChildren(queue, w.getDynamicChildren());
+				enqueueChildren(queue, w.getNestedChildren());
+			}
+		}
+		return widgets;
+	}
+
+	private JsonElement setPrayer(JsonObject args) throws Exception
+	{
+		String prayerArg = args.get("prayer").getAsString().toUpperCase();
+		Prayer prayer;
+		try
+		{
+			prayer = Prayer.valueOf(prayerArg);
+		}
+		catch (IllegalArgumentException e)
+		{
+			throw new IllegalArgumentException("Unknown prayer '" + args.get("prayer").getAsString()
+				+ "'; use a RuneLite Prayer enum name, e.g. PROTECT_FROM_MAGIC");
+		}
+		boolean on = !args.has("on") || args.get("on").getAsBoolean();
+		// "PROTECT_FROM_MAGIC" -> "protect from magic"; Ruinous powers are stored as
+		// RP_*, while their widgets show the plain name ("Dampen Magic").
+		String wanted = prayer.name().replace('_', ' ').toLowerCase();
+		if (wanted.startsWith("rp "))
+		{
+			wanted = wanted.substring(3);
+		}
+		final String wantedName = wanted;
+		return onClientThread(() ->
+		{
+			if (client.isPrayerActive(prayer) != on)
+			{
+				Widget button = null;
+				for (Widget w : prayerBookWidgets())
+				{
+					String name = w != null && w.getName() != null
+						? Text.removeTags(w.getName()).toLowerCase() : "";
+					if (name.equals(wantedName))
+					{
+						button = w;
+						break;
+					}
+				}
+				if (button == null)
+				{
+					throw new IllegalArgumentException("No prayer button named '" + wantedName
+						+ "' in the prayer book");
+				}
+				// The op index is 1 on the standard book; read it off the button's own
+				// actions so alternate books with a different layout still work.
+				int opIndex = 1;
+				String[] actions = button.getActions();
+				for (int i = 0; actions != null && i < actions.length; i++)
+				{
+					if (actions[i] != null
+						&& (Text.removeTags(actions[i]).equalsIgnoreCase("Activate")
+							|| Text.removeTags(actions[i]).equalsIgnoreCase("Deactivate")))
+					{
+						opIndex = i + 1;
+						break;
+					}
+				}
+				client.menuAction(-1, button.getId(),
+					opIndex <= 5 ? MenuAction.CC_OP : MenuAction.CC_OP_LOW_PRIORITY,
+					opIndex, -1, on ? "Activate" : "Deactivate", button.getName());
+			}
+			JsonObject result = new JsonObject();
+			result.addProperty("prayer", prayer.name());
+			result.addProperty("requested", on);
+			result.add("prayers", activePrayers());
+			return result;
+		});
+	}
+
 	private JsonElement setWidget(JsonObject args) throws Exception
 	{
 		return onClientThread(() ->
@@ -990,15 +1337,15 @@ class McpTools
 		long stepDelay = optInt(args, "stepDelayMs", 20);
 
 		dispatchMouse(MouseEvent.MOUSE_MOVED, from.x, from.y, MouseEvent.NOBUTTON, 0);
-		Thread.sleep(30);
+		pauseMs(30);
 		dispatchMouse(MouseEvent.MOUSE_PRESSED, from.x, from.y, MouseEvent.BUTTON1, 1);
-		Thread.sleep(100);
+		pauseMs(100);
 		for (int i = 1; i <= steps; i++)
 		{
 			int x = from.x + (to.x - from.x) * i / steps;
 			int y = from.y + (to.y - from.y) * i / steps;
 			dispatchMouse(MouseEvent.MOUSE_DRAGGED, x, y, MouseEvent.BUTTON1, 0);
-			Thread.sleep(stepDelay);
+			pauseMs(stepDelay);
 		}
 		dispatchMouse(MouseEvent.MOUSE_RELEASED, to.x, to.y, MouseEvent.BUTTON1, 1);
 		return textResult("Dragged from " + from.x + "," + from.y + " to " + to.x + "," + to.y);
@@ -1223,7 +1570,7 @@ class McpTools
 		});
 		dispatchMouse(MouseEvent.MOUSE_MOVED, hover.x, hover.y, MouseEvent.NOBUTTON, 0);
 		// Let the client rebuild the mini-menu for the hovered target
-		Thread.sleep(150);
+		pauseMs(150);
 		return onClientThread(() ->
 		{
 			JsonObject result = new JsonObject();
@@ -1250,12 +1597,12 @@ class McpTools
 		{
 			throw new IllegalArgumentException("Provide itemId or itemName");
 		}
-		Point hover = onClientThread(() ->
+		Object found = onClientThread(() ->
 		{
 			Widget inventory = client.getWidget(InterfaceID.Inventory.ITEMS);
-			if (inventory == null || inventory.isHidden())
+			if (inventory == null)
 			{
-				throw new IllegalStateException("Inventory widget is not visible; open the inventory tab first");
+				throw new IllegalStateException("Inventory widget is not loaded");
 			}
 			Widget[] slots = inventory.getDynamicChildren();
 			if (slots != null)
@@ -1279,6 +1626,28 @@ class McpTools
 							continue;
 						}
 					}
+					// Invoke the slot's own op directly (CC_OP, identifier = op index + 1, as the client
+					// builds it), so this works with the inventory tab closed and never moves the mouse.
+					String[] ops = slot.getActions();
+					for (int i = 0; ops != null && i < ops.length; i++)
+					{
+						if (ops[i] != null && Text.removeTags(ops[i]).equalsIgnoreCase(option))
+						{
+							client.menuAction(slot.getIndex(), InterfaceID.Inventory.ITEMS,
+								i < 5 ? MenuAction.CC_OP : MenuAction.CC_OP_LOW_PRIORITY, i + 1,
+								slot.getItemId(), ops[i], slot.getName());
+							JsonObject result = new JsonObject();
+							result.addProperty("invoked", ops[i]);
+							result.addProperty("slot", slot.getIndex());
+							result.addProperty("itemId", slot.getItemId());
+							return result;
+						}
+					}
+					if (inventory.isHidden())
+					{
+						throw new IllegalStateException("Item has no '" + option
+							+ "' op and the inventory tab is closed");
+					}
 					Rectangle b = slot.getBounds();
 					if (b != null && b.width > 0 && b.height > 0)
 					{
@@ -1289,7 +1658,12 @@ class McpTools
 			throw new IllegalArgumentException("Item not found in inventory: "
 				+ (itemId != null ? "id " + itemId : itemName));
 		});
-		return hoverAndInvoke(hover, option, null);
+		if (found instanceof JsonObject)
+		{
+			return (JsonObject) found;
+		}
+		// Ops the slot doesn't list (e.g. server-added): fall back to hovering and reading the menu.
+		return hoverAndInvoke((Point) found, option, null);
 	}
 
 	private JsonElement widgetAction(JsonObject args) throws Exception
@@ -1491,7 +1865,7 @@ class McpTools
 	private JsonElement hoverAndInvoke(Point hover, String optionLower, String targetLower) throws Exception
 	{
 		dispatchMouse(MouseEvent.MOUSE_MOVED, hover.x, hover.y, MouseEvent.NOBUTTON, 0);
-		Thread.sleep(150);
+		pauseMs(150);
 		return onClientThread(() -> invokeMenuEntry(optionLower, targetLower));
 	}
 
@@ -1732,7 +2106,7 @@ class McpTools
 		JsonObject current = null;
 		while (System.currentTimeMillis() < deadline)
 		{
-			Thread.sleep(100);
+			pauseMs(100);
 			current = onClientThread(this::readDialogue);
 			if (!McpHttpServer.GSON.toJson(current).equals(beforeFingerprint))
 			{
@@ -1996,6 +2370,7 @@ class McpTools
 					if (composition != null)
 					{
 						o.addProperty("name", composition.getName());
+						o.add("inventoryActions", nonNull(composition.getInventoryActions()));
 					}
 				}
 				slots.add(o);
@@ -2041,6 +2416,712 @@ class McpTools
 		});
 	}
 
+	// --- decision-loop tools: observe, list_actions, act ---
+
+	private static final MenuAction[] OBJECT_MENU_ACTIONS = {
+		MenuAction.GAME_OBJECT_FIRST_OPTION,
+		MenuAction.GAME_OBJECT_SECOND_OPTION,
+		MenuAction.GAME_OBJECT_THIRD_OPTION,
+		MenuAction.GAME_OBJECT_FOURTH_OPTION,
+		MenuAction.GAME_OBJECT_FIFTH_OPTION,
+	};
+
+	/** Ops list_actions never offers: they need a second target, or only inform. */
+	private static final Set<String> UNLISTED_OPS = Set.of("examine", "drop", "destroy", "use", "walk here", "cancel");
+
+	/** Sections observe adds only on request, beyond its always-on core. */
+	private static final Set<String> OBSERVE_SECTIONS = Set.of("equipment", "skills", "players", "projectiles");
+
+	/** The stored call behind one list_actions entry. */
+	private static final class PendingAction
+	{
+		final String tool;
+		final JsonObject args;
+		/** Returns an error message when the action is no longer valid, or null to proceed. */
+		final Callable<String> validator;
+		final Callable<JsonObject> runner;
+
+		PendingAction(String tool, JsonObject args, Callable<String> validator, Callable<JsonObject> runner)
+		{
+			this.tool = tool;
+			this.args = args;
+			this.validator = validator;
+			this.runner = runner;
+		}
+	}
+
+	/** The actions behind the last list_actions menu, by action id, and the tick it was built on. */
+	private final List<PendingAction> menuActions = new ArrayList<>();
+	private int menuTick = -1;
+
+	private JsonElement observe(JsonObject args) throws Exception
+	{
+		int maxDistance = optInt(args, "maxDistance", 15);
+		int maxNpcs = optInt(args, "maxNpcs", 10);
+		int maxObjects = optInt(args, "maxObjects", 10);
+		int maxItems = optInt(args, "maxItems", 6);
+		Set<String> sections = Objects.requireNonNullElse(optStringSet(args, "sections"), Set.of());
+		for (String section : sections)
+		{
+			if (!OBSERVE_SECTIONS.contains(section))
+			{
+				throw new IllegalArgumentException("Unknown observe section '" + section
+					+ "'; allowed: " + OBSERVE_SECTIONS);
+			}
+		}
+		return onClientThread(() -> observeNow(maxDistance, maxNpcs, maxObjects, maxItems, sections));
+	}
+
+	/**
+	 * One compact snapshot of what a decision loop reads each step, built in a single client-thread
+	 * pass: vitals, combat state, inventory with item ops, nearest NPCs, interactive objects and
+	 * ground items, and dialogue. Must be called on the client thread.
+	 */
+	private JsonObject observeNow(int maxDistance, int maxNpcs, int maxObjects, int maxItems,
+		Set<String> sections)
+	{
+		JsonObject o = new JsonObject();
+		Player local = client.getLocalPlayer();
+		if (client.getGameState() != GameState.LOGGED_IN || local == null)
+		{
+			o.addProperty("loggedIn", false);
+			return o;
+		}
+		WorldPoint me = local.getWorldLocation();
+		o.addProperty("loggedIn", true);
+		o.addProperty("tick", client.getTickCount());
+		if (me != null)
+		{
+			o.addProperty("worldX", me.getX());
+			o.addProperty("worldY", me.getY());
+			o.addProperty("plane", me.getPlane());
+			o.addProperty("regionId", me.getRegionID());
+		}
+		o.addProperty("hp", client.getBoostedSkillLevel(Skill.HITPOINTS));
+		o.addProperty("hpMax", client.getRealSkillLevel(Skill.HITPOINTS));
+		o.addProperty("prayer", client.getBoostedSkillLevel(Skill.PRAYER));
+		o.addProperty("prayerMax", client.getRealSkillLevel(Skill.PRAYER));
+		o.addProperty("runEnergy", client.getEnergy() / 100);
+		o.addProperty("runOn", client.getVarpValue(VarPlayerID.OPTION_RUN) == 1);
+		JsonObject boosts = new JsonObject();
+		for (Skill skill : Skill.values())
+		{
+			int delta = client.getBoostedSkillLevel(skill) - client.getRealSkillLevel(skill);
+			if (delta != 0)
+			{
+				boosts.addProperty(skill.getName(), delta);
+			}
+		}
+		o.add("boosts", boosts);
+		o.add("combat", combatStateJson());
+		o.add("inventory", itemRows(client.getItemContainer(InventoryID.INV)));
+
+		List<JsonObject> npcs = new ArrayList<>();
+		for (NPC npc : client.getNpcs())
+		{
+			JsonObject row = npc != null ? describeActor(npc, me, maxDistance) : null;
+			if (row == null)
+			{
+				continue;
+			}
+			NPCComposition comp = npc.getTransformedComposition() != null
+				? npc.getTransformedComposition()
+				: npc.getComposition();
+			row.addProperty("index", npc.getIndex());
+			row.addProperty("npcId", npc.getId());
+			row.add("actions", nonNull(comp != null ? comp.getActions() : null));
+			npcs.add(row);
+		}
+		o.add("npcs", nearest(npcs, maxNpcs));
+
+		if (me != null)
+		{
+			Scene scene = client.getScene();
+			Tile[][] tiles = scene != null ? scene.getTiles()[client.getPlane()] : null;
+			Set<GameObject> seen = new HashSet<>();
+			List<JsonObject> objects = new ArrayList<>();
+			List<JsonObject> ground = new ArrayList<>();
+			if (tiles != null)
+			{
+				for (Tile[] column : tiles)
+				{
+					for (Tile tile : column)
+					{
+						if (tile == null)
+						{
+							continue;
+						}
+						for (TileObject obj : tileObjects(tile, seen))
+						{
+							JsonObject row = describeTileObject("object", obj, me, null, null, maxDistance);
+							if (row != null && row.has("name") && row.has("actions")
+								&& row.getAsJsonArray("actions").size() > 0)
+							{
+								objects.add(row);
+							}
+						}
+						if (tile.getGroundItems() == null)
+						{
+							continue;
+						}
+						WorldPoint wp = tile.getWorldLocation();
+						if (wp == null)
+						{
+							continue;
+						}
+						int distance = me.distanceTo(wp);
+						if (distance > maxDistance)
+						{
+							continue;
+						}
+						for (TileItem item : tile.getGroundItems())
+						{
+							if (item == null)
+							{
+								continue;
+							}
+							JsonObject row = new JsonObject();
+							row.addProperty("itemId", item.getId());
+							ItemComposition composition = client.getItemDefinition(item.getId());
+							if (composition != null && composition.getName() != null)
+							{
+								row.addProperty("name", composition.getName());
+							}
+							row.addProperty("quantity", item.getQuantity());
+							row.addProperty("worldX", wp.getX());
+							row.addProperty("worldY", wp.getY());
+							row.addProperty("distance", distance);
+							ground.add(row);
+						}
+					}
+				}
+			}
+			o.add("objects", nearest(objects, maxObjects));
+			o.add("groundItems", nearest(ground, maxItems));
+		}
+		else
+		{
+			o.add("objects", new JsonArray());
+			o.add("groundItems", new JsonArray());
+		}
+		o.add("dialogue", readDialogue());
+
+		if (sections.contains("equipment"))
+		{
+			o.add("equipment", itemRows(client.getItemContainer(InventoryID.WORN)));
+		}
+		if (sections.contains("skills"))
+		{
+			JsonArray skills = new JsonArray();
+			for (Skill skill : Skill.values())
+			{
+				JsonObject row = new JsonObject();
+				row.addProperty("skill", skill.getName());
+				row.addProperty("level", client.getRealSkillLevel(skill));
+				row.addProperty("boostedLevel", client.getBoostedSkillLevel(skill));
+				row.addProperty("xp", client.getSkillExperience(skill));
+				skills.add(row);
+			}
+			o.add("skills", skills);
+		}
+		if (sections.contains("players"))
+		{
+			List<JsonObject> players = new ArrayList<>();
+			for (Player player : client.getPlayers())
+			{
+				JsonObject row = player != null ? describeActor(player, me, maxDistance) : null;
+				if (row == null)
+				{
+					continue;
+				}
+				if (player == local)
+				{
+					row.addProperty("isLocal", true);
+				}
+				players.add(row);
+			}
+			o.add("players", nearest(players, 20));
+		}
+		if (sections.contains("projectiles"))
+		{
+			o.add("projectiles", projectilesJson());
+		}
+		return o;
+	}
+
+	/** Compact per-slot rows for an item container (inventory, worn). Client thread only. */
+	private JsonArray itemRows(ItemContainer container)
+	{
+		JsonArray rows = new JsonArray();
+		if (container == null)
+		{
+			return rows;
+		}
+		Item[] items = container.getItems();
+		for (int slot = 0; slot < items.length; slot++)
+		{
+			Item item = items[slot];
+			if (item == null || item.getId() == -1)
+			{
+				continue;
+			}
+			JsonObject row = new JsonObject();
+			row.addProperty("slot", slot);
+			row.addProperty("itemId", item.getId());
+			row.addProperty("quantity", item.getQuantity());
+			ItemComposition composition = client.getItemDefinition(item.getId());
+			if (composition != null)
+			{
+				if (composition.getName() != null)
+				{
+					row.addProperty("name", composition.getName());
+				}
+				row.add("actions", nonNull(composition.getInventoryActions()));
+			}
+			rows.add(row);
+		}
+		return rows;
+	}
+
+	/** In-flight projectiles, same shape as list_projectiles. Client thread only. */
+	private JsonArray projectilesJson()
+	{
+		JsonArray arr = new JsonArray();
+		for (Projectile projectile : client.getProjectiles())
+		{
+			if (projectile == null)
+			{
+				continue;
+			}
+			JsonObject o = new JsonObject();
+			o.addProperty("projectileId", projectile.getId());
+			o.addProperty("remainingCycles", projectile.getRemainingCycles());
+			o.addProperty("startSceneX", projectile.getX1());
+			o.addProperty("startSceneY", projectile.getY1());
+			WorldPoint target = projectile.getTargetPoint();
+			if (target != null)
+			{
+				o.addProperty("targetX", target.getX());
+				o.addProperty("targetY", target.getY());
+				o.addProperty("targetPlane", target.getPlane());
+			}
+			Actor targetActor = projectile.getTargetActor();
+			if (targetActor != null)
+			{
+				o.addProperty("target", targetActor.getName());
+				o.addProperty("targetType", targetActor instanceof NPC ? "npc" : "player");
+			}
+			arr.add(o);
+		}
+		return arr;
+	}
+
+	/** Game, wall, ground and decorative objects on a tile; multi-tile game objects once. */
+	private static List<TileObject> tileObjects(Tile tile, Set<GameObject> seen)
+	{
+		List<TileObject> out = new ArrayList<>();
+		if (tile.getGameObjects() != null)
+		{
+			for (GameObject go : tile.getGameObjects())
+			{
+				if (go != null && seen.add(go))
+				{
+					out.add(go);
+				}
+			}
+		}
+		if (tile.getWallObject() != null)
+		{
+			out.add(tile.getWallObject());
+		}
+		if (tile.getGroundObject() != null)
+		{
+			out.add(tile.getGroundObject());
+		}
+		if (tile.getDecorativeObject() != null)
+		{
+			out.add(tile.getDecorativeObject());
+		}
+		return out;
+	}
+
+	private static JsonArray nonNull(String[] values)
+	{
+		JsonArray out = new JsonArray();
+		if (values != null)
+		{
+			for (String v : values)
+			{
+				if (v != null && !v.isEmpty() && !"null".equals(v))
+				{
+					out.add(v);
+				}
+			}
+		}
+		return out;
+	}
+
+	private static JsonArray nearest(List<JsonObject> rows, int max)
+	{
+		rows.sort(Comparator.comparingInt(r -> r.has("distance") ? r.get("distance").getAsInt() : Integer.MAX_VALUE));
+		JsonArray out = new JsonArray();
+		rows.stream().limit(max).forEach(out::add);
+		return out;
+	}
+
+	@FunctionalInterface
+	private interface MenuBuilder
+	{
+		void add(String label, String kind, String target, PendingAction action);
+	}
+
+	private static JsonObject argsOf(Object... pairs)
+	{
+		JsonObject o = new JsonObject();
+		for (int i = 0; i < pairs.length; i += 2)
+		{
+			o.add((String) pairs[i], (JsonElement) pairs[i + 1]);
+		}
+		return o;
+	}
+
+	/**
+	 * Every action available right now as a numbered menu, built from one observe pass. Each entry
+	 * is a plain-language label (what a small decision model picks from) plus the tool and arguments
+	 * that perform it; act(id) runs one.
+	 */
+	private JsonElement listActions(JsonObject args) throws Exception
+	{
+		boolean dedupe = !args.has("dedupe") || args.get("dedupe").getAsBoolean();
+		int maxActions = optInt(args, "maxActions", 40);
+		// Wider caps than observe's defaults: a menu wants candidates, not just the nearest 10.
+		JsonObject obs = onClientThread(() -> observeNow(
+			optInt(args, "maxDistance", 15), 25, 25, 12, Set.of()));
+		JsonObject result = new JsonObject();
+		if (!obs.get("loggedIn").getAsBoolean())
+		{
+			result.addProperty("loggedIn", false);
+			return result;
+		}
+		JsonArray actions = new JsonArray();
+		List<PendingAction> pending = new ArrayList<>();
+		Set<String> seen = new HashSet<>();
+		MenuBuilder menu = (label, kind, target, action) ->
+		{
+			if (actions.size() >= maxActions || (dedupe && !seen.add(label.replaceAll(" \\(.*", ""))))
+			{
+				return;
+			}
+			JsonObject entry = new JsonObject();
+			entry.addProperty("id", actions.size());
+			entry.addProperty("label", label);
+			entry.addProperty("kind", kind);
+			if (target != null)
+			{
+				entry.addProperty("target", target);
+			}
+			entry.addProperty("tool", action.tool);
+			entry.add("args", action.args);
+			actions.add(entry);
+			pending.add(action);
+		};
+
+		JsonObject dialogue = obs.getAsJsonObject("dialogue");
+		String dialogueType = dialogue.has("type") ? dialogue.get("type").getAsString() : "none";
+		if ("options".equals(dialogueType))
+		{
+			// An options menu blocks everything else until it is answered.
+			for (JsonElement e : dialogue.getAsJsonArray("options"))
+			{
+				JsonObject opt = e.getAsJsonObject();
+				JsonObject call = argsOf("option", opt.get("option"));
+				menu.add(Text.removeTags(opt.get("text").getAsString()), "dialogue", null,
+					new PendingAction("select_option", call, () -> checkDialogue("options"),
+						() -> callTool("select_option", call)));
+			}
+		}
+		else if ("input".equals(dialogueType))
+		{
+			String prompt = dialogue.has("prompt") ? dialogue.get("prompt").getAsString() : "input prompt";
+			JsonObject call = new JsonObject();
+			menu.add("answer '" + Text.removeTags(prompt) + "' (pass args.text)", "dialogue", null,
+				new PendingAction("enter_input", call, () -> checkDialogue("input"),
+					() -> callTool("enter_input", call)));
+		}
+		else
+		{
+			if (dialogue.has("canContinue") && dialogue.get("canContinue").getAsBoolean())
+			{
+				menu.add("continue the dialogue", "dialogue", null,
+					new PendingAction("continue_dialogue", new JsonObject(), () -> checkDialogue(null),
+						() -> callTool("continue_dialogue", new JsonObject())));
+			}
+			for (JsonElement e : obs.getAsJsonArray("npcs"))
+			{
+				JsonObject npc = e.getAsJsonObject();
+				if (npc.has("isDead") || !npc.has("name") || !npc.has("index"))
+				{
+					continue;
+				}
+				String name = npc.get("name").getAsString();
+				String detail = " (lvl " + npc.get("combatLevel").getAsInt()
+					+ (npc.has("distance") ? ", " + npc.get("distance").getAsInt() + " tiles" : "")
+					+ (npc.has("targetsMe") ? ", attacking you" : "") + ")";
+				for (JsonElement op : npc.getAsJsonArray("actions"))
+				{
+					if (UNLISTED_OPS.contains(op.getAsString().toLowerCase()))
+					{
+						continue;
+					}
+					JsonObject call = argsOf("npcIndex", npc.get("index"), "option", op);
+					int expectedIndex = npc.get("index").getAsInt();
+					int expectedNpcId = npc.get("npcId").getAsInt();
+					menu.add(op.getAsString() + " " + name + detail, "npc", name,
+						new PendingAction("interact_npc", call, () -> checkNpc(expectedIndex, expectedNpcId),
+							() -> callTool("interact_npc", call)));
+				}
+			}
+			for (JsonElement e : obs.getAsJsonArray("objects"))
+			{
+				JsonObject obj = e.getAsJsonObject();
+				if (!obj.has("name"))
+				{
+					continue;
+				}
+				for (JsonElement op : obj.getAsJsonArray("actions"))
+				{
+					if (UNLISTED_OPS.contains(op.getAsString().toLowerCase()))
+					{
+						continue;
+					}
+					JsonObject call = argsOf("objectId", obj.get("objectId"), "x", obj.get("worldX"),
+						"y", obj.get("worldY"), "option", op);
+					menu.add(op.getAsString() + " " + obj.get("name").getAsString()
+						+ (obj.has("distance") ? " (" + obj.get("distance").getAsInt() + " tiles)" : ""),
+						"object", obj.get("name").getAsString(),
+						new PendingAction("object_action", call, null, () -> callTool("object_action", call)));
+				}
+			}
+			for (JsonElement e : obs.getAsJsonArray("groundItems"))
+			{
+				JsonObject item = e.getAsJsonObject();
+				String name = item.has("name") ? item.get("name").getAsString() : "item " + item.get("itemId").getAsInt();
+				JsonObject call = argsOf("itemId", item.get("itemId"), "x", item.get("worldX"),
+					"y", item.get("worldY"));
+				menu.add("take " + name
+					+ (item.has("distance") ? " (" + item.get("distance").getAsInt() + " tiles)" : ""),
+					"ground", name, new PendingAction("pickup_item", call,
+						() -> checkGroundItem(item.get("itemId").getAsInt(),
+							item.get("worldX").getAsInt(), item.get("worldY").getAsInt()),
+						() -> callTool("pickup_item", call)));
+			}
+			for (JsonElement e : obs.getAsJsonArray("inventory"))
+			{
+				JsonObject item = e.getAsJsonObject();
+				String name = item.has("name") ? item.get("name").getAsString() : "item " + item.get("itemId").getAsInt();
+				for (JsonElement op : item.getAsJsonArray("actions"))
+				{
+					if (UNLISTED_OPS.contains(op.getAsString().toLowerCase()))
+					{
+						continue;
+					}
+					JsonObject call = argsOf("itemId", item.get("itemId"), "option", op);
+					menu.add(op.getAsString().toLowerCase() + " " + name, "item", null,
+						new PendingAction("item_action", call, null, () -> callTool("item_action", call)));
+				}
+			}
+		}
+
+		int tick = obs.get("tick").getAsInt();
+		synchronized (menuActions)
+		{
+			menuActions.clear();
+			menuActions.addAll(pending);
+			menuTick = tick;
+		}
+		result.addProperty("tick", tick);
+		result.add("actions", actions);
+		if (args.has("includeObservation") && args.get("includeObservation").getAsBoolean())
+		{
+			result.add("observation", obs);
+		}
+		return result;
+	}
+
+	private JsonElement act(JsonObject args) throws Exception
+	{
+		int id = args.get("id").getAsInt();
+		int maxAge = optInt(args, "maxAgeTicks", 3);
+		PendingAction action;
+		int tick = onClientThread(() -> client.getTickCount());
+		int age;
+		synchronized (menuActions)
+		{
+			if (menuTick < 0)
+			{
+				throw new IllegalStateException("No action menu built yet; call list_actions first");
+			}
+			if (id < 0 || id >= menuActions.size())
+			{
+				throw new IllegalArgumentException("No action " + id + " in the last list_actions menu ("
+					+ menuActions.size() + " actions)");
+			}
+			age = tick - menuTick;
+			action = menuActions.get(id);
+		}
+		if (age > maxAge)
+		{
+			throw new IllegalStateException("The action menu is " + age + " ticks old; call list_actions again");
+		}
+		JsonObject call = action.args.deepCopy();
+		if (args.has("args") && args.get("args").isJsonObject())
+		{
+			for (Map.Entry<String, JsonElement> e : args.getAsJsonObject("args").entrySet())
+			{
+				call.add(e.getKey(), e.getValue());
+			}
+		}
+		if (action.validator != null)
+		{
+			String error = action.validator.call();
+			if (error != null)
+			{
+				throw new IllegalStateException(error + "; call list_actions again");
+			}
+		}
+		JsonObject result = callTool(action.tool, call);
+		result.addProperty("actionId", id);
+		return result;
+	}
+
+	/** Revalidation: the dialogue still has the expected type (any open type when expected is null). */
+	private String checkDialogue(String expectedType) throws Exception
+	{
+		String type = onClientThread(() ->
+		{
+			JsonObject dialogue = readDialogue();
+			return dialogue.has("type") ? dialogue.get("type").getAsString() : "none";
+		});
+		if (expectedType != null && !expectedType.equals(type))
+		{
+			return "Dialogue is no longer " + expectedType + " (now " + type + ")";
+		}
+		if (expectedType == null && "none".equals(type))
+		{
+			return "Dialogue is no longer open";
+		}
+		return null;
+	}
+
+	/** Revalidation: the NPC index still points at the same NPC. */
+	private String checkNpc(int index, int npcId) throws Exception
+	{
+		return onClientThread(() ->
+		{
+			for (NPC npc : client.getNpcs())
+			{
+				if (npc != null && npc.getIndex() == index)
+				{
+					if (npc.getId() == npcId && !npc.isDead())
+					{
+						return null;
+					}
+					return "NPC index " + index + " now holds a different NPC";
+				}
+			}
+			return "NPC index " + index + " despawned";
+		});
+	}
+
+	/** Revalidation: the ground item is still on the tile. */
+	private String checkGroundItem(int itemId, int x, int y) throws Exception
+	{
+		return onClientThread(() ->
+		{
+			LocalPoint lp = LocalPoint.fromWorld(client, new WorldPoint(x, y, client.getPlane()));
+			if (lp == null)
+			{
+				return "Tile " + x + "," + y + " is no longer in the loaded scene";
+			}
+			Tile tile = client.getScene().getTiles()[client.getPlane()][lp.getSceneX()][lp.getSceneY()];
+			if (tile != null && tile.getGroundItems() != null)
+			{
+				for (TileItem item : tile.getGroundItems())
+				{
+					if (item != null && item.getId() == itemId)
+					{
+						return null;
+					}
+				}
+			}
+			return "Item " + itemId + " is no longer on tile " + x + "," + y;
+		});
+	}
+
+	/**
+	 * Invoke a scene object's op directly (the menu entry the client would build: scene x/y, object
+	 * id), so the object need not be on screen and the mouse never moves.
+	 */
+	private JsonObject invokeObjectOp(JsonObject args) throws Exception
+	{
+		int objectId = args.get("objectId").getAsInt();
+		int x = args.get("x").getAsInt();
+		int y = args.get("y").getAsInt();
+		String option = args.get("option").getAsString();
+		Integer planeArg = args.has("plane") ? args.get("plane").getAsInt() : null;
+		return onClientThread(() ->
+		{
+			int plane = planeArg != null ? planeArg : client.getPlane();
+			LocalPoint lp = LocalPoint.fromWorld(client, new WorldPoint(x, y, plane));
+			if (lp == null)
+			{
+				throw new IllegalArgumentException("Tile " + x + "," + y + " is not in the loaded scene");
+			}
+			Scene scene = client.getScene();
+			Tile tile = scene != null ? scene.getTiles()[plane][lp.getSceneX()][lp.getSceneY()] : null;
+			TileObject obj = tile == null ? null : tileObjects(tile, new HashSet<>()).stream()
+				.filter(o -> o.getId() == objectId).findFirst().orElse(null);
+			if (obj == null)
+			{
+				throw new IllegalArgumentException("Object " + objectId + " is no longer at " + x + "," + y);
+			}
+			ObjectComposition comp = client.getObjectDefinition(objectId);
+			if (comp != null && comp.getImpostorIds() != null && comp.getImpostor() != null)
+			{
+				comp = comp.getImpostor();
+			}
+			String[] ops = comp != null ? comp.getActions() : null;
+			int index = -1;
+			for (int i = 0; ops != null && i < ops.length && i < OBJECT_MENU_ACTIONS.length; i++)
+			{
+				if (ops[i] != null && ops[i].equalsIgnoreCase(option))
+				{
+					index = i;
+				}
+			}
+			if (index < 0)
+			{
+				throw new IllegalArgumentException((comp != null ? comp.getName() : "Object " + objectId)
+					+ " has no option '" + option + "'. Available: " + availableActions(ops));
+			}
+			int sceneX = lp.getSceneX();
+			int sceneY = lp.getSceneY();
+			if (obj instanceof GameObject)
+			{
+				net.runelite.api.Point min = ((GameObject) obj).getSceneMinLocation();
+				sceneX = min.getX();
+				sceneY = min.getY();
+			}
+			client.menuAction(sceneX, sceneY, OBJECT_MENU_ACTIONS[index], objectId, -1, option,
+				comp != null && comp.getName() != null ? comp.getName() : "");
+			JsonObject result = new JsonObject();
+			result.addProperty("invoked", option);
+			result.addProperty("object", comp != null ? comp.getName() : null);
+			result.addProperty("objectId", objectId);
+			return result;
+		});
+	}
+
 	private JsonObject waitFor(JsonObject args) throws Exception
 	{
 		String condition = args.get("condition").getAsString();
@@ -2056,7 +3137,7 @@ class McpTools
 				state.addProperty("waitedMs", System.currentTimeMillis() - start);
 				return textResult(state);
 			}
-			Thread.sleep(100);
+			pauseMs(100);
 		}
 	}
 
@@ -2139,9 +3220,128 @@ class McpTools
 				}
 				break;
 			}
+			case "hitsplat":
+			{
+				String actorFilter = args.has("actorName") ? args.get("actorName").getAsString() : null;
+				JsonObject history = recorder.combatHistory(
+					System.currentTimeMillis() - startMs, actorFilter, 50);
+				met = false;
+				for (JsonElement e : history.getAsJsonArray("events"))
+				{
+					o.add("hitsplat", e);
+					met = true;
+					break;
+				}
+				break;
+			}
+			case "projectile":
+			{
+				Integer projectileId = args.has("projectileId") ? args.get("projectileId").getAsInt() : null;
+				JsonObject history = recorder.projectileHistory(
+					System.currentTimeMillis() - startMs, projectileId, 50);
+				met = false;
+				for (JsonElement e : history.getAsJsonArray("events"))
+				{
+					o.add("projectile", e);
+					met = true;
+					break;
+				}
+				break;
+			}
+			case "animation":
+			case "spotanim":
+			{
+				String kind = "animation".equals(condition) ? "animation" : "graphic";
+				String actorFilter = args.has("actorName") ? args.get("actorName").getAsString()
+					: args.has("npcName") ? args.get("npcName").getAsString() : null;
+				Integer wantedId = args.has("animationId") ? args.get("animationId").getAsInt() : null;
+				JsonObject history = recorder.effectHistory(
+					System.currentTimeMillis() - startMs, kind, actorFilter, 50);
+				met = false;
+				for (JsonElement e : history.getAsJsonArray("events"))
+				{
+					JsonObject event = e.getAsJsonObject();
+					if (wantedId != null)
+					{
+						JsonElement value = event.get("value");
+						if ("animation".equals(kind))
+						{
+							if (value == null || !value.isJsonPrimitive() || value.getAsInt() != wantedId)
+							{
+								continue;
+							}
+						}
+						else
+						{
+							boolean hasId = false;
+							if (value != null && value.isJsonArray())
+							{
+								for (JsonElement v : value.getAsJsonArray())
+								{
+									if (v.getAsInt() == wantedId)
+									{
+										hasId = true;
+									}
+								}
+							}
+							if (!hasId)
+							{
+								continue;
+							}
+						}
+					}
+					o.add("effect", event);
+					met = true;
+					break;
+				}
+				break;
+			}
+			case "var":
+			{
+				String type = args.get("type").getAsString();
+				int id = args.get("id").getAsInt();
+				int wanted = args.get("value").getAsInt();
+				int current;
+				switch (type)
+				{
+					case "varbit":
+						current = client.getVarbitValue(id);
+						break;
+					case "varp":
+						current = client.getVarpValue(id);
+						break;
+					case "varcint":
+						current = client.getVarcIntValue(id);
+						break;
+					default:
+						throw new IllegalArgumentException("var condition supports varbit, varp, varcint (not " + type + ")");
+				}
+				met = current == wanted;
+				o.addProperty("current", current);
+				break;
+			}
+			case "in_combat":
+			case "out_of_combat":
+			{
+				JsonObject combat = combatStateJson();
+				boolean inCombat = combat.has("inCombat") && combat.get("inCombat").getAsBoolean();
+				met = "in_combat".equals(condition) == inCombat;
+				o.add("combat", combat);
+				break;
+			}
+			case "prayer":
+			{
+				Prayer prayer = Prayer.valueOf(args.get("prayer").getAsString().toUpperCase());
+				boolean wantOn = !args.has("on") || args.get("on").getAsBoolean();
+				met = client.isPrayerActive(prayer) == wantOn;
+				o.addProperty("active", client.isPrayerActive(prayer));
+				break;
+			}
 			default:
 				throw new IllegalArgumentException("Unknown condition: " + condition
-					+ " (idle, at_tile, npc_dead, dialogue, interface_open, interface_closed, chat_message)");
+					+ " (idle, at_tile, npc_dead, dialogue, interface_open, interface_closed,"
+					+ " chat_message, hitsplat, projectile, animation, spotanim, var,"
+					+ " in_combat, out_of_combat, prayer)");
 		}
 		o.addProperty("met", met);
 		return o;
@@ -2401,6 +3601,14 @@ class McpTools
 		{
 			o.addProperty("interacting", interacting.getName());
 			o.addProperty("interactingType", interacting instanceof NPC ? "npc" : "player");
+			if (interacting instanceof NPC)
+			{
+				o.addProperty("interactingIndex", ((NPC) interacting).getIndex());
+			}
+			if (interacting == client.getLocalPlayer() && actor != interacting)
+			{
+				o.addProperty("targetsMe", true);
+			}
 		}
 		JsonArray spotAnims = new JsonArray();
 		for (ActorSpotAnim spotAnim : actor.getSpotAnims())
@@ -2649,12 +3857,25 @@ class McpTools
 
 	// --- input dispatch ---
 
+	/**
+	 * Pace input events without Thread.sleep: the delay runs on the scheduler and
+	 * {@code get()} blocks this worker thread interruptibly, so MCP tool-call
+	 * cancellation still aborts mid-sequence. Only used for millisecond input
+	 * pacing where the event ordering, not the exact delay, matters.
+	 */
+	private static void pauseMs(long ms) throws InterruptedException, ExecutionException
+	{
+		CompletableFuture.runAsync(() ->
+		{
+		}, CompletableFuture.delayedExecutor(ms, TimeUnit.MILLISECONDS)).get();
+	}
+
 	private void clickAt(int x, int y, int button) throws Exception
 	{
 		dispatchMouse(MouseEvent.MOUSE_MOVED, x, y, MouseEvent.NOBUTTON, 0);
-		Thread.sleep(15);
+		pauseMs(15);
 		dispatchMouse(MouseEvent.MOUSE_PRESSED, x, y, button, 1);
-		Thread.sleep(20);
+		pauseMs(20);
 		dispatchMouse(MouseEvent.MOUSE_RELEASED, x, y, button, 1);
 		dispatchMouse(MouseEvent.MOUSE_CLICKED, x, y, button, 1);
 	}
@@ -2686,7 +3907,7 @@ class McpTools
 			keyEvent(KeyEvent.KEY_PRESSED, code, c),
 			keyEvent(KeyEvent.KEY_TYPED, KeyEvent.VK_UNDEFINED, c),
 			keyEvent(KeyEvent.KEY_RELEASED, code, c));
-		Thread.sleep(5);
+		pauseMs(5);
 	}
 
 	private void pressNamedKey(String name) throws Exception
