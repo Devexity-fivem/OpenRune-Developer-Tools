@@ -231,8 +231,15 @@ client — see section 8.
 ## 7. Commits
 
 - `fb9d9af` "Adopt upstream PR #2/#3 with hardening; add tests and transport
-  safety" — pushed to `fork/devexity-mcp-improvements`. `main` (fork + local)
-  and `prod` remain at `8304e71` / `d3951fd` respectively.
+  safety"
+- `6d9a48c` / `af01b9b` ledger updates
+- `6434c94` "Add evidence channels, state diffing, and combat/world tools"
+- `e58cfb5` "Fix diff_state schema and run_batch result envelope" — fixes
+  caught by live testing (see §8): `maxDistance` declared required instead of
+  optional; `run_batch` result missing the MCP `content` envelope.
+
+All pushed to `fork/devexity-mcp-improvements`. `main` (fork + local)
+and `prod` remain at `8304e71` / `d3951fd` respectively.
 
 ## 8. Live verification
 
@@ -254,4 +261,25 @@ Lumbridge area, world 3220,3219):
 | `set_prayer` on/off | THICK_SKIN toggled both ways; `prayers` reflects it ✓ |
 | `object_action` | Door 1535 Open invoked, no hover/mouse ✓ |
 | `/log` | server+version+tools+entries all present ✓ |
+
+Second batch (commit `6434c94`, then `e58cfb5` after live-found fixes) verified
+in a live client after restart (70 tools registered):
+
+| Check | Result |
+|---|---|
+| `tools/list` | 70 tools, all 16 new tools present ✓ |
+| `get_special_attack` | energy 100, enabled false ✓ |
+| `get_attack_style` | index + Accurate/Rapid/Longrange styles ✓ |
+| `list_spells` | 100 spellbook entries ✓ |
+| `is_walkable` | tile flags + `walkable:true`, `blockedDirections:[east]` ✓ |
+| `get_destination` | `{"moving":false}` at rest ✓ |
+| `search_interfaces` | 0 matches for absent text (correct) ✓ |
+| `get_loot_history` | 7 ground-item events, `dropped:0` ✓ |
+| `get_spawn_history` | 52 NPC spawn/despawn/transform events, `dropped:0` ✓ |
+| `get_overhead_history` | 0 events in window (none occurred) ✓ |
+| `snapshot_state`/`diff_state` | diff detects NPC movement + add/remove + tick; `from:"t0"` label works (after `e58cfb5` schema fix) ✓ |
+| `run_batch` | per-step ok/error; unknown tool fails cleanly with step index; proper `content` envelope (after `e58cfb5` fix) ✓ |
+
+Deferred (not implemented): shop/trade-specific tools, world hop/logout,
+quest-variable name mapping, screenshot pixel-diff.
 
