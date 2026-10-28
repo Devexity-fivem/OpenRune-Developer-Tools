@@ -213,17 +213,22 @@ client — see section 8.
 
 ## 8. Live verification
 
-Live MCP server at `127.0.0.1:7780` verified reachable and **logged in**
-(world 3220,3219) but still running the **baseline** build (`flux-client-mcp
-0.1.0`): `initialize`, `get_client_state`, `list_npcs` all answer;
-`get_combat_state` correctly returns "Unknown tool" — the new jar is not
-loaded because sideloaded jars only load at client start and `deploy` is now
-an explicit task. Live verification steps for the user:
+Deployed via `gradlew deploy` to `.rlcustom`, `.rsprox`, `.runelite`
+sideloaded-plugins; verified in a live client after restart (logged in,
+Lumbridge area, world 3220,3219):
 
-1. `./gradlew deploy -PsideloadDirs=<your test client's dir>`
-2. Restart that client, enable the plugin, hit `initialize`/`tools/list` —
-   expect `openrune-devtools 0.2.0` and the new tool names.
-3. `get_status`, `observe`, `list_actions` at login screen → `loggedIn:false`.
-4. In game: `list_actions` near an NPC → `act(id)` on a Talk-to → `wait_for`
-   `dialogue`; `get_combat_state` during a fight; `set_prayer` on/off.
+| Check | Result |
+|---|---|
+| `initialize` | `openrune-devtools 0.2.0-local`, new instructions ✓ |
+| `tools/list` | 54 tools, all new tools present, valid schemas ✓ |
+| `get_status` | version, toolCount, gameState, tick, position ✓ |
+| `get_combat_state` | hp 99/99, not in combat, empty prayers/attackers ✓ |
+| `observe` | vitals, combat, inventory w/ item ops, NPCs, objects, ground items, dialogue — one pass ✓ |
+| `list_actions` | 40-entry menu: NPC ops, `object_action` ops, takes, item ops ✓ |
+| `act` stale | 5-tick-old menu rejected "call list_actions again" ✓ |
+| `act(0)` Talk-to | revalidated + invoked; player walked to NPC; dialogue opened ✓ |
+| `continue_dialogue` | dialogue closed ✓ |
+| `set_prayer` on/off | THICK_SKIN toggled both ways; `prayers` reflects it ✓ |
+| `object_action` | Door 1535 Open invoked, no hover/mouse ✓ |
+| `/log` | server+version+tools+entries all present ✓ |
 
