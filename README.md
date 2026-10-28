@@ -156,6 +156,34 @@ in `observe`/`list_npcs`, and NPCs carry `interactingIndex` when their target
 can be resolved. Destructive or two-target ops (drop, destroy, use) are never
 listed — use `item_action`/`invoke_menu_action` for those deliberately.
 
+### Evidence and regression
+
+| Tool | Description |
+|---|---|
+| `snapshot_state` | Store a labelled state snapshot (vitals, combat, inventory, equipment, skills, entities) |
+| `diff_state` | Diff live state against a stored snapshot — returns only changed fields |
+| `run_batch` | Execute an ordered list of tool calls in one request, per-step ok/error |
+| `get_spawn_history` | NPC spawn/despawn/transform events — boss phase changes, respawn verification |
+| `get_loot_history` | Ground-item spawned/despawned events — deterministic drop-table evidence |
+| `get_overhead_history` | NPC/player overhead text events — phase-change announcements |
+
+### Combat extras
+
+| Tool | Description |
+|---|---|
+| `get_special_attack` / `toggle_special_attack` | Spec energy + enabled state; click the spec orb |
+| `get_attack_style` / `set_attack_style` | Read/click combat-tab attack styles by name or index |
+| `list_spells` / `cast_spell` | Spellbook contents; cast a spell by fuzzy name |
+| `bank_action` | Withdraw/deposit ops directly on bank widgets while the bank is open |
+
+### World extras
+
+| Tool | Description |
+|---|---|
+| `is_walkable` | Collision flags for a world tile — "did the door actually block" |
+| `get_destination` | The tile the player is currently walking to |
+| `search_interfaces` | Find loaded widgets containing a text string |
+
 ### Dialogue
 
 | Tool | Description |
@@ -190,7 +218,7 @@ listed — use `item_action`/`invoke_menu_action` for those deliberately.
 
 | Tool | Description |
 |---|---|
-| `wait_for` | Block until a condition: idle, at_tile, npc_dead, dialogue, interface_open/closed, chat_message, hitsplat, projectile, animation, spotanim, var, in_combat/out_of_combat, prayer — checked every 100ms, returns immediately when met. Event-based conditions only see new events after the call starts |
+| `wait_for` | Block until a condition: idle, at_tile, npc_dead, dialogue, interface_open/closed, chat_message, hitsplat, projectile, animation, spotanim, var, in_combat/out_of_combat, prayer, ticks, spawn/despawn/transform, loot, overhead — checked every 100ms, returns immediately when met. Event-based conditions only see new events after the call starts |
 
 All history tools report a `dropped` count — how many events were evicted from
 the bounded buffer — so truncation is visible instead of silent.

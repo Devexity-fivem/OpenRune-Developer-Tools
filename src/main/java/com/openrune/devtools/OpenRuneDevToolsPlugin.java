@@ -43,6 +43,8 @@ import net.runelite.api.Hitsplat;
 import net.runelite.api.Item;
 import net.runelite.api.ItemComposition;
 import net.runelite.api.NPC;
+import net.runelite.api.Tile;
+import net.runelite.api.TileItem;
 import net.runelite.api.Projectile;
 import net.runelite.api.ScriptEvent;
 import net.runelite.api.coords.WorldPoint;
@@ -53,6 +55,12 @@ import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.GraphicChanged;
 import net.runelite.api.events.HitsplatApplied;
 import net.runelite.api.events.ItemContainerChanged;
+import net.runelite.api.events.ItemDespawned;
+import net.runelite.api.events.ItemSpawned;
+import net.runelite.api.events.NpcChanged;
+import net.runelite.api.events.NpcDespawned;
+import net.runelite.api.events.NpcSpawned;
+import net.runelite.api.events.OverheadTextChanged;
 import net.runelite.api.events.MenuOpened;
 import net.runelite.api.events.ProjectileMoved;
 import net.runelite.api.events.ScriptPreFired;
@@ -284,6 +292,75 @@ public class OpenRuneDevToolsPlugin extends Plugin
 			actor.getHealthRatio(),
 			actor.getHealthScale(),
 			client.getTickCount());
+	}
+
+	@Subscribe
+	public void onNpcSpawned(NpcSpawned event)
+	{
+		recordActorLifecycle("spawn", event.getNpc(), null);
+	}
+
+	@Subscribe
+	public void onNpcDespawned(NpcDespawned event)
+	{
+		recordActorLifecycle("despawn", event.getNpc(), null);
+	}
+
+	@Subscribe
+	public void onNpcChanged(NpcChanged event)
+	{
+		// Transforms keep the index but swap the composition: phase changes in bosses.
+		Integer oldId = event.getOld() != null ? event.getOld().getId() : null;
+		recordActorLifecycle("transform", event.getNpc(), oldId);
+	}
+
+	private void recordActorLifecycle(String kind, NPC npc, Integer oldNpcId)
+	{
+		if (recorder == null || npc == null)
+		{
+			return;
+		}
+		WorldPoint wp = npc.getWorldLocation();
+		recorder.recordSpawn(kind, "npc", npc.getName(), npc.getIndex(), npc.getId(), oldNpcId,
+			wp != null ? wp.getX() : null, wp != null ? wp.getY() : null, client.getTickCount());
+	}
+
+	@Subscribe
+	public void onItemSpawned(ItemSpawned event)
+	{
+		recordGroundItem("spawned", event.getTile(), event.getItem());
+	}
+
+	@Subscribe
+	public void onItemDespawned(ItemDespawned event)
+	{
+		recordGroundItem("despawned", event.getTile(), event.getItem());
+	}
+
+	private void recordGroundItem(String kind, Tile tile, TileItem item)
+	{
+		if (recorder == null || item == null)
+		{
+			return;
+		}
+		WorldPoint wp = tile != null ? tile.getWorldLocation() : null;
+		ItemComposition composition = client.getItemDefinition(item.getId());
+		recorder.recordLoot(kind, item.getId(),
+			composition != null ? composition.getName() : null, item.getQuantity(),
+			wp != null ? wp.getX() : null, wp != null ? wp.getY() : null, client.getTickCount());
+	}
+
+	@Subscribe
+	public void onOverheadTextChanged(OverheadTextChanged event)
+	{
+		Actor actor = event.getActor();
+		String text = event.getOverheadText();
+		if (recorder == null || actor == null || text == null || text.isEmpty())
+		{
+			return;
+		}
+		recorder.recordOverhead(actor instanceof NPC ? "npc" : "player", actor.getName(),
+			actor instanceof NPC ? ((NPC) actor).getId() : null, text, client.getTickCount());
 	}
 
 	@Subscribe

@@ -178,11 +178,34 @@ All changes on `devexity-mcp-improvements`, version bumped to `0.2.0`.
 
 ### Deferred
 
-- Live verification of new tools (needs a client restart — user action).
+- Shop/trade-specific tools (`shop_action`, `trade_action`), world hop/logout,
+  quest-var mapping, screenshot pixel-diff — worthwhile but not yet justified.
 - `enter_input` in `list_actions` menus for non-dialogue input prompts beyond
   the observed `input` type.
 - Rate limiting on `/mcp` (loopback-only threat model judged sufficient).
 - Splitting `McpTools.java` — still one registry; no correctness benefit shown.
+
+## 5b. Second batch (post-`fb9d9af`)
+
+Additional tools implemented for OpenRune Server testing:
+
+- **New history channels**: `spawn` (NPC spawn/despawn/transform via
+  NpcSpawned/NpcDespawned/NpcChanged), `loot` (ItemSpawned/ItemDespawned),
+  `overhead` (OverheadTextChanged) — recorded on the event bus, merged into
+  `get_timeline`, cleared by `reset()`.
+- **Regression primitives**: `snapshot_state` (labelled observe snapshots) +
+  `diff_state` (identity-keyed deep diff returning only changed fields);
+  `run_batch` (ordered multi-step calls with per-step ok/error).
+- **Combat**: `get_special_attack`/`toggle_special_attack` (spec orb widget),
+  `get_attack_style`/`set_attack_style` (combat-tab style widgets),
+  `list_spells`/`cast_spell` (spellbook widget walk + fuzzy name match).
+- **World**: `is_walkable` (collision-map flags + direction blocks),
+  `get_destination`.
+- **Interfaces**: `search_interfaces` (text scan of loaded widgets),
+  `bank_action` (direct CC_OP on Bankmain.ITEMS / Bankside.ITEMS).
+- **`wait_for`**: +`ticks`, `spawn`, `despawn`, `transform`, `loot`, `overhead`.
+- 7 new recorder tests (35 total, all green); tool-list test covers all 68
+  tools.
 
 ## 6. Test matrix
 

@@ -45,6 +45,7 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Comparator;
 import java.util.Deque;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -56,7 +57,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 import javax.imageio.ImageIO;
@@ -64,6 +64,8 @@ import javax.swing.SwingUtilities;
 import net.runelite.api.Actor;
 import net.runelite.api.ActorSpotAnim;
 import net.runelite.api.Client;
+import net.runelite.api.CollisionData;
+import net.runelite.api.CollisionDataFlag;
 import net.runelite.api.DecorativeObject;
 import net.runelite.api.GameObject;
 import net.runelite.api.GameState;
@@ -85,6 +87,7 @@ import net.runelite.api.Skill;
 import net.runelite.api.Tile;
 import net.runelite.api.TileItem;
 import net.runelite.api.TileObject;
+import net.runelite.api.VarPlayer;
 import net.runelite.api.WallObject;
 import net.runelite.api.gameval.InterfaceID;
 import net.runelite.api.gameval.InventoryID;
@@ -687,10 +690,140 @@ class McpTools
 
 		// ---- waiting ----
 
+		// ---- evidence / regression ----
+
+		register("snapshot_state",
+			"Store a labelled state snapshot (vitals, combat, inventory, equipment, skills, nearby entities). Pair with diff_state to answer 'what did that action change' without eyeballing JSON.",
+			schema(props(
+				"label", "string", "Name to store it under (default 'last')")),
+			args -> textResult(snapshotState(args)));
+
+		register("diff_state",
+			"Diff the live world against a stored snapshot_state label and return ONLY the changed fields: moved tiles, hp/prayer deltas, item and entity differences. The regression-test primitive.",
+			schema(props(
+				"from", "string", "snapshot_state label to compare against (default 'last')"),
+				"maxDistance", "integer", "Entity scan radius for both snapshots (default 15)"),
+			args -> textResult(diffState(args)));
+
+		register("run_batch",
+			"Run a list of tool calls in order in one request: steps:[{tool,arguments}]. Stops at the first failure unless stopOnError:false. Each step reports ok + result/error text.",
+			schema(props(
+				"steps", "array", "Ordered calls: [{\"tool\":\"walk_to\",\"arguments\":{\"x\":3220,\"y\":3219}}]",
+				"stopOnError", "boolean", "Abort the batch on first failed step (default true)"),
+				"steps"),
+			args -> runBatch(args));
+
+		// ---- combat ----
+
+		register("get_special_attack",
+			"Special attack state: energy percent and whether the spec bar is enabled.",
+			schema(props()), args -> textResult(getSpecialAttack()));
+
+		register("toggle_special_attack",
+			"Toggle the special attack bar by clicking the spec orb. Returns the enabled state after the click.",
+			schema(props()), args -> textResult(toggleSpecialAttack()));
+
+		register("get_attack_style",
+			"Current weapon attack style index plus the style names the combat tab offers for the wielded weapon.",
+			schema(props()), args -> textResult(getAttackStyle()));
+
+		register("set_attack_style",
+			"Click a combat-tab attack style by name (fuzzy, e.g. 'aggressive') or index 0-3.",
+			schema(props(
+				"style", "string", "Style name substring or index ('slash', 'aggressive', '2')"),
+				"style"),
+			args -> textResult(setAttackStyle(args)));
+
+		// ---- magic ----
+
+		register("list_spells",
+			"Spells visible in the standard spellbook: name + widget component id.",
+			schema(props()), args -> textResult(listSpells()));
+
+		register("cast_spell",
+			"Click a spellbook spell by name (fuzzy). For on-target combat spells, cast then click the target.",
+			schema(props(
+				"spell", "string", "Spell name substring, e.g. 'fire surge'"),
+				"spell"),
+			args -> textResult(castSpell(args)));
+
+		// ---- world / movement ----
+
+		register("is_walkable",
+			"Collision-map check on a world tile: raw flag bits, whether the tile is walkable, and which directions are blocked. Answers 'did the door actually block'.",
+			schema(props(
+				"x", "integer", "World x", "y", "integer", "World y",
+				"plane", "integer", "Plane (default current)"),
+				"x", "y"),
+			args -> textResult(isWalkable(args)));
+
+		register("get_destination",
+			"The world tile the local player is currently walking to, or null when idle.",
+			schema(props()), args -> textResult(getDestination()));
+
+		// ---- interfaces ----
+
+		register("search_interfaces",
+			"Find loaded widgets whose text contains a string (quest journals, drop logs, banks, shops). Returns component ids, groups, text.",
+			schema(props(
+				"text", "string", "Case-insensitive substring to search for",
+				"maxResults", "integer", "Cap (default 50)"),
+				"text"),
+			args -> textResult(searchInterfaces(args)));
+
+		register("bank_action",
+			"Invoke a bank op directly on a banked item (Withdraw-1/5/10/All...) or a deposited item via side:'inventory' (Deposit-1/All...) — bank must be open.",
+			schema(props(
+				"option", "string", "Op name, e.g. 'Withdraw-1', 'Withdraw-All', 'Deposit-5'",
+				"itemId", "integer", "Item id",
+				"itemName", "string", "Name substring (alternative)",
+				"side", "string", "bank (default, withdraw side) or inventory (deposit side)"),
+				"option"),
+			args -> textResult(bankAction(args)));
+
+		// ---- new history channels ----
+
+		register("get_spawn_history",
+			"NPC lifecycle events: spawn, despawn and transform (id change at a stable index — boss phase changes). Filter by kind/name.",
+			schema(props(
+				"sinceMs", "integer", "Window in ms (default 60000)",
+				"kind", "string", "spawn, despawn or transform",
+				"nameFilter", "string", "NPC name substring",
+				"limit", "integer", "Max events (default 100)")),
+			args -> textResult(recorder.spawnHistory(
+				optInt(args, "sinceMs", 60_000),
+				args.has("kind") ? args.get("kind").getAsString() : null,
+				args.has("nameFilter") ? args.get("nameFilter").getAsString() : null,
+				optInt(args, "limit", 100))));
+
+		register("get_loot_history",
+			"Ground-item lifecycle: spawned (drops!) and despawned events with item, quantity, tile, tick — deterministic drop-table evidence.",
+			schema(props(
+				"sinceMs", "integer", "Window in ms (default 60000)",
+				"kind", "string", "spawned or despawned",
+				"nameFilter", "string", "Item name substring",
+				"limit", "integer", "Max events (default 100)")),
+			args -> textResult(recorder.lootHistory(
+				optInt(args, "sinceMs", 60_000),
+				args.has("kind") ? args.get("kind").getAsString() : null,
+				args.has("nameFilter") ? args.get("nameFilter").getAsString() : null,
+				optInt(args, "limit", 100))));
+
+		register("get_overhead_history",
+			"Overhead text events ('More power!') — how many mechanics announce phase changes. Filter matches actor or text.",
+			schema(props(
+				"sinceMs", "integer", "Window in ms (default 60000)",
+				"nameFilter", "string", "Matches actor name or text",
+				"limit", "integer", "Max events (default 100)")),
+			args -> textResult(recorder.overheadHistory(
+				optInt(args, "sinceMs", 60_000),
+				args.has("nameFilter") ? args.get("nameFilter").getAsString() : null,
+				optInt(args, "limit", 100))));
+
 		register("wait_for",
 			"Block until a game condition is met, checked every 100ms - returns the moment it happens. Use this after walk_to/interact/attack instead of taking screenshots or guessing delays. Event-based conditions only see NEW events since the call started. Returns met:false with current state on timeout.",
 			schema(props(
-				"condition", "string", "What to wait for: idle, at_tile, npc_dead, dialogue, interface_open / interface_closed, chat_message, hitsplat, projectile, animation, spotanim, var, in_combat, out_of_combat, prayer",
+				"condition", "string", "What to wait for: idle, at_tile, npc_dead, dialogue, interface_open / interface_closed, chat_message, hitsplat, projectile, animation, spotanim, var, in_combat / out_of_combat, prayer, ticks, spawn / despawn / transform, loot, overhead",
 				"timeoutMs", "integer", "Give up after this long (default 10000, max 60000)",
 				"x", "integer", "at_tile: world x",
 				"y", "integer", "at_tile: world y",
@@ -3122,15 +3255,566 @@ class McpTools
 		});
 	}
 
+	// --- evidence / regression ---
+
+	/** Stored snapshot_state payloads by label. */
+	private final Map<String, JsonObject> snapshots = new HashMap<>();
+
+	private JsonObject snapshotState(JsonObject args) throws Exception
+	{
+		String label = args.has("label") ? args.get("label").getAsString() : "last";
+		JsonObject snap = onClientThread(() -> observeNow(15, 25, 25, 12,
+			Set.of("equipment", "skills", "projectiles")));
+		snap.addProperty("snapshotAtMs", System.currentTimeMillis());
+		snapshots.put(label, snap);
+		JsonObject result = snap.deepCopy();
+		result.addProperty("label", label);
+		return result;
+	}
+
+	private JsonObject diffState(JsonObject args) throws Exception
+	{
+		String label = args.has("from") ? args.get("from").getAsString() : "last";
+		JsonObject before = snapshots.get(label);
+		if (before == null)
+		{
+			throw new IllegalArgumentException("No snapshot labelled '" + label
+				+ "'; call snapshot_state first (known: " + snapshots.keySet() + ")");
+		}
+		int maxDistance = optInt(args, "maxDistance", 15);
+		JsonObject after = onClientThread(() -> observeNow(maxDistance, 25, 25, 12,
+			Set.of("equipment", "skills", "projectiles")));
+		JsonObject changes = new JsonObject();
+		diffJson("", before, after, changes);
+		JsonObject result = new JsonObject();
+		result.addProperty("from", label);
+		result.addProperty("snapshotTick", before.has("tick") ? before.get("tick").getAsInt() : -1);
+		result.addProperty("nowTick", after.has("tick") ? after.get("tick").getAsInt() : -1);
+		result.addProperty("changed", changes.size() > 0);
+		result.add("changes", changes);
+		return result;
+	}
+
+	/** Keys that identify one row inside an array of objects, in priority order. */
+	private static final String[] IDENTITY_KEYS = {
+		"slot", "index", "npcId", "objectId", "itemId", "skill", "name", "worldX"};
+
+	private static void diffJson(String path, JsonElement a, JsonElement b, JsonObject out)
+	{
+		if (a == null || a.isJsonNull())
+		{
+			if (b != null && !b.isJsonNull())
+			{
+				JsonObject change = new JsonObject();
+				change.add("added", b);
+				out.add(path, change);
+			}
+			return;
+		}
+		if (b == null || b.isJsonNull())
+		{
+			JsonObject change = new JsonObject();
+			change.add("removed", a);
+			out.add(path, change);
+			return;
+		}
+		if (a.isJsonObject() && b.isJsonObject())
+		{
+			Set<String> keys = new HashSet<>(a.getAsJsonObject().keySet());
+			keys.addAll(b.getAsJsonObject().keySet());
+			for (String key : keys)
+			{
+				if ("timeMs".equals(key) || "seq".equals(key) || "snapshotAtMs".equals(key))
+				{
+					continue; // timestamps always differ
+				}
+				diffJson(path.isEmpty() ? key : path + "." + key,
+					a.getAsJsonObject().get(key), b.getAsJsonObject().get(key), out);
+			}
+			return;
+		}
+		if (a.isJsonArray() && b.isJsonArray())
+		{
+			diffArrays(path, a.getAsJsonArray(), b.getAsJsonArray(), out);
+			return;
+		}
+		if (!a.equals(b))
+		{
+			JsonObject change = new JsonObject();
+			change.add("was", a);
+			change.add("now", b);
+			out.add(path, change);
+		}
+	}
+
+	/** Match array rows by an identity field so reordered lists don't diff as churn. */
+	private static void diffArrays(String path, JsonArray a, JsonArray b, JsonObject out)
+	{
+		String idKey = identityKey(a, b);
+		if (idKey != null)
+		{
+			Map<String, JsonObject> beforeRows = new HashMap<>();
+			for (JsonElement e : a)
+			{
+				if (e.isJsonObject() && e.getAsJsonObject().has(idKey))
+				{
+					beforeRows.put(e.getAsJsonObject().get(idKey).getAsString(), e.getAsJsonObject());
+				}
+			}
+			Set<String> seen = new HashSet<>();
+			for (JsonElement e : b)
+			{
+				if (!e.isJsonObject() || !e.getAsJsonObject().has(idKey))
+				{
+					continue;
+				}
+				String key = e.getAsJsonObject().get(idKey).getAsString();
+				seen.add(key);
+				diffJson(path + "[" + key + "]", beforeRows.get(key), e, out);
+			}
+			for (Map.Entry<String, JsonObject> row : beforeRows.entrySet())
+			{
+				if (!seen.contains(row.getKey()))
+				{
+					JsonObject change = new JsonObject();
+					change.add("removed", row.getValue());
+					out.add(path + "[" + row.getKey() + "]", change);
+				}
+			}
+			return;
+		}
+		if (!a.equals(b))
+		{
+			JsonObject change = new JsonObject();
+			change.add("was", a);
+			change.add("now", b);
+			out.add(path, change);
+		}
+	}
+
+	private static String identityKey(JsonArray a, JsonArray b)
+	{
+		for (String key : IDENTITY_KEYS)
+		{
+			boolean inA = a.size() == 0
+				|| (a.get(0).isJsonObject() && a.get(0).getAsJsonObject().has(key));
+			boolean inB = b.size() == 0
+				|| (b.get(0).isJsonObject() && b.get(0).getAsJsonObject().has(key));
+			if ((a.size() > 0 || b.size() > 0) && inA && inB)
+			{
+				return key;
+			}
+		}
+		return null;
+	}
+
+	private JsonObject runBatch(JsonObject args) throws Exception
+	{
+		JsonArray steps = args.getAsJsonArray("steps");
+		boolean stopOnError = !args.has("stopOnError") || args.get("stopOnError").getAsBoolean();
+		JsonArray results = new JsonArray();
+		int failed = 0;
+		for (int i = 0; i < steps.size(); i++)
+		{
+			JsonObject step = steps.get(i).getAsJsonObject();
+			String tool = step.get("tool").getAsString();
+			JsonObject stepArgs = step.has("arguments") && step.get("arguments").isJsonObject()
+				? step.getAsJsonObject("arguments") : new JsonObject();
+			JsonObject row = new JsonObject();
+			row.addProperty("step", i);
+			row.addProperty("tool", tool);
+			try
+			{
+				JsonObject result = callTool(tool, stepArgs);
+				row.addProperty("ok", !(result.has("isError") && result.get("isError").getAsBoolean()));
+				row.add("result", result);
+				if (!row.get("ok").getAsBoolean())
+				{
+					failed++;
+				}
+			}
+			catch (Exception e)
+			{
+				row.addProperty("ok", false);
+				row.addProperty("error", e.getMessage() == null ? e.toString() : e.getMessage());
+				failed++;
+			}
+			results.add(row);
+			if (failed > 0 && stopOnError)
+			{
+				break;
+			}
+		}
+		JsonObject result = new JsonObject();
+		result.addProperty("stepsRun", results.size());
+		result.addProperty("failed", failed);
+		result.add("steps", results);
+		return result;
+	}
+
+	// --- combat widgets ---
+
+	private JsonObject getSpecialAttack() throws Exception
+	{
+		return onClientThread(() ->
+		{
+			JsonObject result = new JsonObject();
+			result.addProperty("energy", client.getVarpValue(VarPlayer.SPECIAL_ATTACK_PERCENT) / 10);
+			result.addProperty("enabled", client.getVarpValue(VarPlayer.SPECIAL_ATTACK_ENABLED) != 0);
+			return result;
+		});
+	}
+
+	private JsonObject toggleSpecialAttack() throws Exception
+	{
+		Point p = onClientThread(() ->
+		{
+			Widget button = client.getWidget(InterfaceID.Orbs.SPECBUTTON);
+			if (button == null || button.isHidden())
+			{
+				throw new IllegalStateException("Special attack orb is not visible");
+			}
+			Rectangle b = button.getBounds();
+			if (b == null || b.width <= 0)
+			{
+				throw new IllegalStateException("Special attack orb has no bounds");
+			}
+			return new Point(b.x + b.width / 2, b.y + b.height / 2);
+		});
+		clickAt(p.x, p.y, MouseEvent.BUTTON1);
+		return getSpecialAttack();
+	}
+
+	private static final int[] STYLE_WIDGETS = {
+		InterfaceID.CombatInterface._0, InterfaceID.CombatInterface._1,
+		InterfaceID.CombatInterface._2, InterfaceID.CombatInterface._3};
+	private static final int[] STYLE_TEXT_WIDGETS = {
+		InterfaceID.CombatInterface._0_TEXT, InterfaceID.CombatInterface._1_TEXT,
+		InterfaceID.CombatInterface._2_TEXT, InterfaceID.CombatInterface._3_TEXT};
+
+	private JsonObject getAttackStyle() throws Exception
+	{
+		return onClientThread(() ->
+		{
+			JsonObject result = new JsonObject();
+			result.addProperty("styleIndex", client.getVarpValue(VarPlayer.ATTACK_STYLE));
+			JsonArray styles = new JsonArray();
+			for (int i = 0; i < STYLE_WIDGETS.length; i++)
+			{
+				Widget text = client.getWidget(STYLE_TEXT_WIDGETS[i]);
+				JsonObject row = new JsonObject();
+				row.addProperty("index", i);
+				if (text != null && text.getText() != null && !text.getText().isEmpty())
+				{
+					row.addProperty("name", Text.removeTags(text.getText()));
+				}
+				styles.add(row);
+			}
+			result.add("styles", styles);
+			return result;
+		});
+	}
+
+	private JsonObject setAttackStyle(JsonObject args) throws Exception
+	{
+		String style = args.get("style").getAsString().toLowerCase();
+		Point p = onClientThread(() ->
+		{
+			for (int i = 0; i < STYLE_WIDGETS.length; i++)
+			{
+				Widget text = client.getWidget(STYLE_TEXT_WIDGETS[i]);
+				String name = text != null && text.getText() != null
+					? Text.removeTags(text.getText()).toLowerCase() : "";
+				if ((name.contains(style) || String.valueOf(i).equals(style)) && !name.isEmpty())
+				{
+					Widget button = client.getWidget(STYLE_WIDGETS[i]);
+					Rectangle b = button != null ? button.getBounds() : null;
+					if (b == null || b.width <= 0)
+					{
+						throw new IllegalStateException("Attack style " + i + " has no clickable bounds");
+					}
+					return new Point(b.x + b.width / 2, b.y + b.height / 2);
+				}
+			}
+			throw new IllegalArgumentException("No attack style matching '" + style
+				+ "'; call get_attack_style for what the wielded weapon offers");
+		});
+		clickAt(p.x, p.y, MouseEvent.BUTTON1);
+		return getAttackStyle();
+	}
+
+	// --- magic ---
+
+	private JsonObject listSpells() throws Exception
+	{
+		return onClientThread(() ->
+		{
+			JsonArray spells = new JsonArray();
+			collectSpellWidgets(spells, null);
+			JsonObject result = new JsonObject();
+			result.addProperty("count", spells.size());
+			result.add("spells", spells);
+			return result;
+		});
+	}
+
+	private JsonObject castSpell(JsonObject args) throws Exception
+	{
+		String spell = args.get("spell").getAsString().toLowerCase();
+		JsonObject resolved = onClientThread(() ->
+		{
+			JsonArray spells = new JsonArray();
+			JsonObject match = collectSpellWidgets(spells, spell);
+			if (match == null)
+			{
+				JsonArray names = new JsonArray();
+				for (JsonElement s : spells)
+				{
+					names.add(s.getAsJsonObject().get("name").getAsString());
+				}
+				throw new IllegalArgumentException("No spell matching '" + spell
+					+ "' in the spellbook. Available: " + names);
+			}
+			Widget widget = client.getWidget(match.get("componentId").getAsInt());
+			Rectangle b = widget != null ? widget.getBounds() : null;
+			if (b == null || b.width <= 0)
+			{
+				throw new IllegalStateException("Spell widget is hidden or has no bounds: "
+					+ match.get("name").getAsString());
+			}
+			match.addProperty("cx", b.x + b.width / 2);
+			match.addProperty("cy", b.y + b.height / 2);
+			return match;
+		});
+		clickAt(resolved.get("cx").getAsInt(), resolved.get("cy").getAsInt(), MouseEvent.BUTTON1);
+		JsonObject result = new JsonObject();
+		result.addProperty("cast", resolved.get("name").getAsString());
+		result.addProperty("componentId", resolved.get("componentId").getAsInt());
+		return result;
+	}
+
+	/**
+	 * Collect spell widgets from the standard spellbook into rows (name + componentId).
+	 * Returns the best fuzzy match for {@code matchName}, or null. Client thread only.
+	 */
+	private JsonObject collectSpellWidgets(JsonArray out, String matchName)
+	{
+		Widget universe = client.getWidget(InterfaceID.MagicSpellbook.UNIVERSE);
+		if (universe == null)
+		{
+			return null;
+		}
+		JsonObject best = null;
+		Deque<Widget> queue = new ArrayDeque<>();
+		queue.add(universe);
+		while (!queue.isEmpty())
+		{
+			Widget w = queue.poll();
+			if (w == null)
+			{
+				continue;
+			}
+			String name = w.getName() != null ? Text.removeTags(w.getName()) : "";
+			if (!name.isEmpty() && w.getActions() != null)
+			{
+				JsonObject row = new JsonObject();
+				row.addProperty("name", name);
+				row.addProperty("componentId", w.getId());
+				out.add(row);
+				if (matchName != null && name.toLowerCase().contains(matchName))
+				{
+					best = row;
+				}
+			}
+			enqueueChildren(queue, w.getStaticChildren());
+			enqueueChildren(queue, w.getDynamicChildren());
+			enqueueChildren(queue, w.getNestedChildren());
+		}
+		return best;
+	}
+
+	// --- world / movement ---
+
+	private JsonObject isWalkable(JsonObject args) throws Exception
+	{
+		int x = args.get("x").getAsInt();
+		int y = args.get("y").getAsInt();
+		return onClientThread(() ->
+		{
+			int plane = args.has("plane") ? args.get("plane").getAsInt() : client.getPlane();
+			LocalPoint lp = LocalPoint.fromWorld(client, new WorldPoint(x, y, plane));
+			if (lp == null)
+			{
+				throw new IllegalArgumentException("Tile " + x + "," + y + " is not in the loaded scene");
+			}
+			CollisionData[] maps = client.getCollisionMaps();
+			if (maps == null || maps[plane] == null)
+			{
+				throw new IllegalStateException("No collision map loaded for plane " + plane);
+			}
+			int flags = maps[plane].getFlags()[lp.getSceneX()][lp.getSceneY()];
+			JsonObject result = new JsonObject();
+			result.addProperty("x", x);
+			result.addProperty("y", y);
+			result.addProperty("plane", plane);
+			result.addProperty("flags", flags);
+			int tileBlock = CollisionDataFlag.BLOCK_MOVEMENT_FULL
+				| CollisionDataFlag.BLOCK_MOVEMENT_OBJECT
+				| CollisionDataFlag.BLOCK_MOVEMENT_FLOOR_DECORATION
+				| CollisionDataFlag.BLOCK_MOVEMENT_FLOOR;
+			result.addProperty("walkable", (flags & tileBlock) == 0);
+			JsonArray blocked = new JsonArray();
+			if ((flags & CollisionDataFlag.BLOCK_MOVEMENT_NORTH) != 0) blocked.add("north");
+			if ((flags & CollisionDataFlag.BLOCK_MOVEMENT_EAST) != 0) blocked.add("east");
+			if ((flags & CollisionDataFlag.BLOCK_MOVEMENT_SOUTH) != 0) blocked.add("south");
+			if ((flags & CollisionDataFlag.BLOCK_MOVEMENT_WEST) != 0) blocked.add("west");
+			result.add("blockedDirections", blocked);
+			return result;
+		});
+	}
+
+	private JsonObject getDestination() throws Exception
+	{
+		return onClientThread(() ->
+		{
+			JsonObject result = new JsonObject();
+			LocalPoint dest = client.getLocalDestinationLocation();
+			if (dest != null && dest.isInScene())
+			{
+				WorldPoint wp = WorldPoint.fromLocal(client, dest);
+				result.addProperty("x", wp.getX());
+				result.addProperty("y", wp.getY());
+				result.addProperty("plane", wp.getPlane());
+			}
+			result.addProperty("moving", dest != null && dest.isInScene());
+			return result;
+		});
+	}
+
+	// --- interfaces ---
+
+	private JsonObject searchInterfaces(JsonObject args) throws Exception
+	{
+		String needle = args.get("text").getAsString().toLowerCase();
+		int maxResults = optInt(args, "maxResults", 50);
+		return onClientThread(() ->
+		{
+			JsonArray matches = new JsonArray();
+			Widget[] roots = client.getWidgetRoots();
+			if (roots != null)
+			{
+				Deque<Widget> queue = new ArrayDeque<>();
+				for (Widget root : roots)
+				{
+					if (root != null)
+					{
+						queue.add(root);
+					}
+				}
+				while (!queue.isEmpty() && matches.size() < maxResults)
+				{
+					Widget w = queue.poll();
+					if (w == null)
+					{
+						continue;
+					}
+					String text = w.getText();
+					if (text != null && Text.removeTags(text).toLowerCase().contains(needle))
+					{
+						JsonObject row = new JsonObject();
+						row.addProperty("componentId", w.getId());
+						row.addProperty("interfaceId", w.getId() >>> 16);
+						String clean = Text.removeTags(text);
+						row.addProperty("text", clean.length() > 120 ? clean.substring(0, 120) + "…" : clean);
+						row.addProperty("hidden", w.isHidden());
+						matches.add(row);
+					}
+					enqueueChildren(queue, w.getStaticChildren());
+					enqueueChildren(queue, w.getDynamicChildren());
+					enqueueChildren(queue, w.getNestedChildren());
+				}
+			}
+			JsonObject result = new JsonObject();
+			result.addProperty("count", matches.size());
+			result.addProperty("truncated", matches.size() >= maxResults);
+			result.add("matches", matches);
+			return result;
+		});
+	}
+
+	private JsonObject bankAction(JsonObject args) throws Exception
+	{
+		String option = args.get("option").getAsString();
+		Integer itemId = args.has("itemId") ? args.get("itemId").getAsInt() : null;
+		String itemName = args.has("itemName") ? args.get("itemName").getAsString().toLowerCase() : null;
+		boolean depositSide = args.has("side") && "inventory".equalsIgnoreCase(args.get("side").getAsString());
+		int containerWidget = depositSide ? InterfaceID.Bankside.ITEMS : InterfaceID.Bankmain.ITEMS;
+		return onClientThread(() ->
+		{
+			Widget container = client.getWidget(containerWidget);
+			if (container == null || container.isHidden())
+			{
+				throw new IllegalStateException("Bank is not open (widget "
+					+ (depositSide ? "Bankside" : "Bankmain") + ".ITEMS not visible)");
+			}
+			Widget[] slots = container.getDynamicChildren();
+			if (slots != null)
+			{
+				for (Widget slot : slots)
+				{
+					if (slot == null || slot.getItemId() <= 0)
+					{
+						continue;
+					}
+					if (itemId != null && slot.getItemId() != itemId)
+					{
+						continue;
+					}
+					if (itemName != null)
+					{
+						ItemComposition composition = client.getItemDefinition(slot.getItemId());
+						String name = composition != null ? composition.getName() : null;
+						if (name == null || !name.toLowerCase().contains(itemName))
+						{
+							continue;
+						}
+					}
+					String[] ops = slot.getActions();
+					for (int i = 0; ops != null && i < ops.length; i++)
+					{
+						if (ops[i] != null && Text.removeTags(ops[i]).equalsIgnoreCase(option))
+						{
+							client.menuAction(slot.getIndex(), containerWidget,
+								i < 5 ? MenuAction.CC_OP : MenuAction.CC_OP_LOW_PRIORITY, i + 1,
+								slot.getItemId(), ops[i], slot.getName());
+							JsonObject result = new JsonObject();
+							result.addProperty("invoked", ops[i]);
+							result.addProperty("slot", slot.getIndex());
+							result.addProperty("itemId", slot.getItemId());
+							result.addProperty("side", depositSide ? "inventory" : "bank");
+							return result;
+						}
+					}
+					throw new IllegalArgumentException("Bank item has no '" + option
+						+ "' op. Available: " + availableActions(ops));
+				}
+			}
+			throw new IllegalArgumentException("Item not found on the "
+				+ (depositSide ? "deposit" : "withdraw") + " side: "
+				+ (itemId != null ? "id " + itemId : itemName));
+		});
+	}
+
 	private JsonObject waitFor(JsonObject args) throws Exception
 	{
 		String condition = args.get("condition").getAsString();
 		long timeout = Math.min(optInt(args, "timeoutMs", 10_000), 60_000);
 		long start = System.currentTimeMillis();
 		long deadline = start + timeout;
+		int startTick = onClientThread(() -> client.getTickCount());
 		while (true)
 		{
-			JsonObject state = onClientThread(() -> checkCondition(condition, args, start));
+			JsonObject state = onClientThread(() -> checkCondition(condition, args, start, startTick));
 			if (state.get("met").getAsBoolean() || System.currentTimeMillis() >= deadline)
 			{
 				state.addProperty("condition", condition);
@@ -3144,7 +3828,7 @@ class McpTools
 	/**
 	 * Evaluate a wait_for condition. Must be called on the client thread.
 	 */
-	private JsonObject checkCondition(String condition, JsonObject args, long startMs)
+	private JsonObject checkCondition(String condition, JsonObject args, long startMs, int startTick)
 	{
 		JsonObject o = new JsonObject();
 		boolean met;
@@ -3337,11 +4021,67 @@ class McpTools
 				o.addProperty("active", client.isPrayerActive(prayer));
 				break;
 			}
+			case "ticks":
+			{
+				int wanted = args.get("value").getAsInt();
+				int elapsed = client.getTickCount() - startTick;
+				met = elapsed >= wanted;
+				o.addProperty("elapsedTicks", elapsed);
+				break;
+			}
+			case "spawn":
+			case "despawn":
+			case "transform":
+			{
+				String nameFilter = args.has("actorName") ? args.get("actorName").getAsString()
+					: args.has("npcName") ? args.get("npcName").getAsString() : null;
+				JsonObject history = recorder.spawnHistory(
+					System.currentTimeMillis() - startMs, condition, nameFilter, 50);
+				met = false;
+				for (JsonElement e : history.getAsJsonArray("events"))
+				{
+					o.add("event", e);
+					met = true;
+					break;
+				}
+				break;
+			}
+			case "loot":
+			{
+				String nameFilter = args.has("itemName") ? args.get("itemName").getAsString()
+					: args.has("actorName") ? args.get("actorName").getAsString() : null;
+				JsonObject history = recorder.lootHistory(
+					System.currentTimeMillis() - startMs, "spawned", nameFilter, 50);
+				met = false;
+				for (JsonElement e : history.getAsJsonArray("events"))
+				{
+					o.add("event", e);
+					met = true;
+					break;
+				}
+				break;
+			}
+			case "overhead":
+			{
+				String filter = args.has("textContains") ? args.get("textContains").getAsString()
+					: args.has("actorName") ? args.get("actorName").getAsString() : null;
+				JsonObject history = recorder.overheadHistory(
+					System.currentTimeMillis() - startMs, filter, 50);
+				met = false;
+				for (JsonElement e : history.getAsJsonArray("events"))
+				{
+					o.add("event", e);
+					met = true;
+					break;
+				}
+				break;
+			}
 			default:
 				throw new IllegalArgumentException("Unknown condition: " + condition
 					+ " (idle, at_tile, npc_dead, dialogue, interface_open, interface_closed,"
 					+ " chat_message, hitsplat, projectile, animation, spotanim, var,"
-					+ " in_combat, out_of_combat, prayer)");
+					+ " in_combat, out_of_combat, prayer, ticks, spawn, despawn, transform,"
+					+ " loot, overhead)");
 		}
 		o.addProperty("met", met);
 		return o;

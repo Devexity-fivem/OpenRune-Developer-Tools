@@ -149,6 +149,50 @@ class McpEventRecorderTest
 	}
 
 	@Test
+	void spawnHistoryRecordsLifecycleKinds()
+	{
+		recorder.recordSpawn("spawn", "npc", "Jad", 100, 3127, null, 3200, 3200, 10);
+		recorder.recordSpawn("transform", "npc", "Jad", 100, 3128, 3127, 3200, 3200, 20);
+		recorder.recordSpawn("despawn", "npc", "Goblin", 100, null, null, 3200, 3200, 30);
+		assertEquals(3, recorder.spawnHistory(60_000, null, null, 100).get("total").getAsInt());
+		assertEquals(1, recorder.spawnHistory(60_000, "transform", null, 100).get("total").getAsInt());
+		assertEquals(2, recorder.spawnHistory(60_000, null, "jad", 100).get("total").getAsInt());
+		var transform = recorder.spawnHistory(60_000, "transform", null, 1)
+			.getAsJsonArray("events").get(0).getAsJsonObject();
+		assertEquals(3127, transform.get("oldNpcId").getAsInt());
+		assertEquals(3128, transform.get("npcId").getAsInt());
+	}
+
+	@Test
+	void lootHistoryRecordsDropsAndPickups()
+	{
+		recorder.recordLoot("spawned", 526, "Bones", 1, 3200, 3201, 10);
+		recorder.recordLoot("despawned", 995, "Coins", 50, 3200, 3201, 20);
+		assertEquals(2, recorder.lootHistory(60_000, null, null, 100).get("total").getAsInt());
+		assertEquals(1, recorder.lootHistory(60_000, "spawned", null, 100).get("total").getAsInt());
+		assertEquals(1, recorder.lootHistory(60_000, null, "bones", 100).get("total").getAsInt());
+	}
+
+	@Test
+	void overheadHistoryMatchesActorOrText()
+	{
+		recorder.recordOverhead("npc", "Vorkath", 8059, "More power!", 10);
+		recorder.recordOverhead("player", "devin", null, "Ouch", 11);
+		assertEquals(1, recorder.overheadHistory(60_000, "vorkath", 100).get("total").getAsInt());
+		assertEquals(1, recorder.overheadHistory(60_000, "more power", 100).get("total").getAsInt());
+		assertEquals(2, recorder.overheadHistory(60_000, null, 100).get("total").getAsInt());
+	}
+
+	@Test
+	void newChannelsAppearInTimeline()
+	{
+		recorder.recordSpawn("spawn", "npc", "Goblin", 50, 3029, null, 1, 2, 5);
+		recorder.recordLoot("spawned", 995, "Coins", 100, 1, 2, 6);
+		JsonObject tl = recorder.timeline(60_000, Set.of("spawn", "loot"), null, null, 100);
+		assertEquals(2, tl.get("total").getAsInt());
+	}
+
+	@Test
 	void scriptArgsAreTruncated()
 	{
 		Object[] args = new Object[200];

@@ -56,6 +56,9 @@ class McpEventRecorder
 	private static final int XP_BUFFER = 2000;
 	private static final int CONTAINER_BUFFER = 1000;
 	private static final int SOUND_BUFFER = 2000;
+	private static final int SPAWN_BUFFER = 1000;
+	private static final int LOOT_BUFFER = 1000;
+	private static final int OVERHEAD_BUFFER = 500;
 	private static final int MAX_ARGS_LENGTH = 160;
 	private static final int MAX_COUNT_ROWS = 50;
 
@@ -69,6 +72,9 @@ class McpEventRecorder
 	private final Deque<JsonObject> experience = new ArrayDeque<>();
 	private final Deque<JsonObject> containers = new ArrayDeque<>();
 	private final Deque<JsonObject> sounds = new ArrayDeque<>();
+	private final Deque<JsonObject> spawns = new ArrayDeque<>();
+	private final Deque<JsonObject> loot = new ArrayDeque<>();
+	private final Deque<JsonObject> overheads = new ArrayDeque<>();
 	private final Map<String, Integer> lastIntValues = new HashMap<>();
 	private final Map<Integer, String> lastStrValues = new HashMap<>();
 	private final Map<String, Integer> lastSkillXp = new HashMap<>();
@@ -100,6 +106,9 @@ class McpEventRecorder
 		lastSkillXp.clear();
 		lastBoostedLevels.clear();
 		lastContainerContents.clear();
+		spawns.clear();
+		loot.clear();
+		overheads.clear();
 		droppedByChannel.clear();
 		lastHitOnMeTick = -1;
 		lastMyHitTick = -1;
@@ -304,6 +313,165 @@ class McpEventRecorder
 			entry.addProperty("source", source);
 		}
 		push(sounds, SOUND_BUFFER, entry);
+	}
+
+	/**
+	 * Actor lifecycle events: spawn, despawn and transform (NPC id change at a
+	 * stable index — the phase transitions bosses do mid-fight).
+	 */
+	synchronized void recordSpawn(String kind, String actorType, String name, int index,
+		Integer npcId, Integer oldNpcId, Integer x, Integer y, int tick)
+	{
+		JsonObject entry = baseEntry("spawn", tick);
+		entry.addProperty("kind", kind);
+		entry.addProperty("actorType", actorType);
+		if (name != null)
+		{
+			entry.addProperty("name", name);
+		}
+		entry.addProperty("index", index);
+		if (npcId != null)
+		{
+			entry.addProperty("npcId", npcId);
+		}
+		if (oldNpcId != null)
+		{
+			entry.addProperty("oldNpcId", oldNpcId);
+		}
+		if (x != null && y != null)
+		{
+			entry.addProperty("x", x);
+			entry.addProperty("y", y);
+		}
+		push(spawns, SPAWN_BUFFER, entry);
+	}
+
+	/** Ground-item lifecycle: spawned (drops included) and despawned/picked up. */
+	synchronized void recordLoot(String kind, int itemId, String name, int quantity,
+		Integer x, Integer y, int tick)
+	{
+		JsonObject entry = baseEntry("loot", tick);
+		entry.addProperty("kind", kind);
+		entry.addProperty("itemId", itemId);
+		if (name != null)
+		{
+			entry.addProperty("name", name);
+		}
+		entry.addProperty("quantity", quantity);
+		if (x != null && y != null)
+		{
+			entry.addProperty("x", x);
+			entry.addProperty("y", y);
+		}
+		push(loot, LOOT_BUFFER, entry);
+	}
+
+	/** Overhead text ("More power!") — how many mechanics announce phase changes. */
+	synchronized void recordOverhead(String actorType, String actorName, Integer npcId,
+		String text, int tick)
+	{
+		JsonObject entry = baseEntry("overhead", tick);
+		entry.addProperty("actorType", actorType);
+		if (actorName != null)
+		{
+			entry.addProperty("actor", actorName);
+		}
+		if (npcId != null)
+		{
+			entry.addProperty("npcId", npcId);
+		}
+		entry.addProperty("text", text);
+		push(overheads, OVERHEAD_BUFFER, entry);
+	}
+
+	synchronized JsonObject spawnHistory(long sinceMs, String kind, String nameFilter, int limit)
+	{
+		long cutoff = System.currentTimeMillis() - sinceMs;
+		String filter = nameFilter != null ? nameFilter.toLowerCase() : null;
+		List<JsonObject> matched = new ArrayList<>();
+		for (JsonObject entry : spawns)
+		{
+			if (entry.get("timeMs").getAsLong() < cutoff)
+			{
+				continue;
+			}
+			if (kind != null && !kind.equalsIgnoreCase(entry.get("kind").getAsString()))
+			{
+				continue;
+			}
+			if (filter != null && (!entry.has("name")
+				|| !entry.get("name").getAsString().toLowerCase().contains(filter)))
+			{
+				continue;
+			}
+			matched.add(entry);
+		}
+		JsonObject result = new JsonObject();
+		result.addProperty("windowMs", sinceMs);
+		result.addProperty("total", matched.size());
+		result.addProperty("dropped", droppedFor("spawn"));
+		result.add("events", tail(matched, limit));
+		return result;
+	}
+
+	synchronized JsonObject lootHistory(long sinceMs, String kind, String nameFilter, int limit)
+	{
+		long cutoff = System.currentTimeMillis() - sinceMs;
+		String filter = nameFilter != null ? nameFilter.toLowerCase() : null;
+		List<JsonObject> matched = new ArrayList<>();
+		for (JsonObject entry : loot)
+		{
+			if (entry.get("timeMs").getAsLong() < cutoff)
+			{
+				continue;
+			}
+			if (kind != null && !kind.equalsIgnoreCase(entry.get("kind").getAsString()))
+			{
+				continue;
+			}
+			if (filter != null && (!entry.has("name")
+				|| !entry.get("name").getAsString().toLowerCase().contains(filter)))
+			{
+				continue;
+			}
+			matched.add(entry);
+		}
+		JsonObject result = new JsonObject();
+		result.addProperty("windowMs", sinceMs);
+		result.addProperty("total", matched.size());
+		result.addProperty("dropped", droppedFor("loot"));
+		result.add("events", tail(matched, limit));
+		return result;
+	}
+
+	synchronized JsonObject overheadHistory(long sinceMs, String nameFilter, int limit)
+	{
+		long cutoff = System.currentTimeMillis() - sinceMs;
+		String filter = nameFilter != null ? nameFilter.toLowerCase() : null;
+		List<JsonObject> matched = new ArrayList<>();
+		for (JsonObject entry : overheads)
+		{
+			if (entry.get("timeMs").getAsLong() < cutoff)
+			{
+				continue;
+			}
+			if (filter != null)
+			{
+				String actor = entry.has("actor") ? entry.get("actor").getAsString().toLowerCase() : "";
+				String text = entry.get("text").getAsString().toLowerCase();
+				if (!actor.contains(filter) && !text.contains(filter))
+				{
+					continue;
+				}
+			}
+			matched.add(entry);
+		}
+		JsonObject result = new JsonObject();
+		result.addProperty("windowMs", sinceMs);
+		result.addProperty("total", matched.size());
+		result.addProperty("dropped", droppedFor("overhead"));
+		result.add("events", tail(matched, limit));
+		return result;
 	}
 
 	synchronized JsonObject chatHistory(long sinceMs, String type, String nameFilter, int limit)
@@ -605,7 +773,7 @@ class McpEventRecorder
 	private List<Deque<JsonObject>> allBuffers()
 	{
 		return List.of(scripts, vars, varcs, projectiles, effects, chat,
-			combat, experience, containers, sounds);
+			combat, experience, containers, sounds, spawns, loot, overheads);
 	}
 
 	private static JsonArray quantityChanges(Map<Integer, Integer> before, Map<Integer, Integer> after)

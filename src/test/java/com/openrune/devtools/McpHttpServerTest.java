@@ -153,7 +153,12 @@ class McpHttpServerTest
 		for (String expected : new String[]{
 			"observe", "list_actions", "act", "get_status", "get_combat_state",
 			"set_prayer", "item_action", "object_action", "wait_for", "get_timeline",
-			"get_combat_history", "interact_npc", "interact_object"})
+			"get_combat_history", "interact_npc", "interact_object",
+			"snapshot_state", "diff_state", "run_batch",
+			"get_special_attack", "toggle_special_attack",
+			"get_attack_style", "set_attack_style", "cast_spell", "list_spells",
+			"is_walkable", "get_destination", "search_interfaces", "bank_action",
+			"get_spawn_history", "get_loot_history", "get_overhead_history"})
 		{
 			assertTrue(names.contains(expected), "missing tool " + expected);
 		}
