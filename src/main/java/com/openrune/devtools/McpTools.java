@@ -701,8 +701,8 @@ class McpTools
 		register("diff_state",
 			"Diff the live world against a stored snapshot_state label and return ONLY the changed fields: moved tiles, hp/prayer deltas, item and entity differences. The regression-test primitive.",
 			schema(props(
-				"from", "string", "snapshot_state label to compare against (default 'last')"),
-				"maxDistance", "integer", "Entity scan radius for both snapshots (default 15)"),
+				"from", "string", "snapshot_state label to compare against (default 'last')",
+				"maxDistance", "integer", "Entity scan radius for both snapshots (default 15)")),
 			args -> textResult(diffState(args)));
 
 		register("run_batch",
@@ -711,7 +711,7 @@ class McpTools
 				"steps", "array", "Ordered calls: [{\"tool\":\"walk_to\",\"arguments\":{\"x\":3220,\"y\":3219}}]",
 				"stopOnError", "boolean", "Abort the batch on first failed step (default true)"),
 				"steps"),
-			args -> runBatch(args));
+			args -> textResult(runBatch(args)));
 
 		// ---- combat ----
 
