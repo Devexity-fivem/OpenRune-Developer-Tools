@@ -164,7 +164,9 @@ class McpHttpServerTest
 			"list_worlds", "hop_world", "logout", "list_quests",
 			"item_def", "npc_def", "object_def",
 			"find_path", "get_collision_area", "set_camera",
-			"use_item", "compare_screenshot"})
+			"use_item", "compare_screenshot",
+			"widget_op", "get_actor", "get_tile", "set_var",
+			"toggle_run", "mark_tile", "mark_widget", "clear_marks"})
 		{
 			assertTrue(names.contains(expected), "missing tool " + expected);
 		}

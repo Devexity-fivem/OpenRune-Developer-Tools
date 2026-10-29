@@ -876,6 +876,54 @@ class McpEventRecorder
 			interfaces, actions);
 	}
 
+	private Map<String, Deque<JsonObject>> channelBuffers;
+
+	private Map<String, Deque<JsonObject>> channelBuffers()
+	{
+		if (channelBuffers == null)
+		{
+			channelBuffers = Map.ofEntries(
+				Map.entry("script", scripts), Map.entry("var", vars),
+				Map.entry("varc", varcs), Map.entry("projectile", projectiles),
+				Map.entry("effect", effects), Map.entry("chat", chat),
+				Map.entry("combat", combat), Map.entry("experience", experience),
+				Map.entry("container", containers), Map.entry("sound", sounds),
+				Map.entry("spawn", spawns), Map.entry("loot", loot),
+				Map.entry("overhead", overheads), Map.entry("interface", interfaces),
+				Map.entry("action", actions));
+		}
+		return channelBuffers;
+	}
+
+	/**
+	 * First (newest) event in a channel since {@code cutoffMs} matching {@code predicate},
+	 * or null. Early-exit scan for wait_for conditions — building a full history
+	 * response every poll would iterate and allocate thousands of objects on the
+	 * client thread.
+	 */
+	synchronized JsonObject firstEventSince(String channel, long cutoffMs,
+		java.util.function.Predicate<JsonObject> predicate)
+	{
+		Deque<JsonObject> buffer = channelBuffers().get(channel);
+		if (buffer == null)
+		{
+			return null;
+		}
+		for (java.util.Iterator<JsonObject> it = buffer.descendingIterator(); it.hasNext();)
+		{
+			JsonObject entry = it.next();
+			if (entry.get("timeMs").getAsLong() < cutoffMs)
+			{
+				break;
+			}
+			if (predicate.test(entry))
+			{
+				return entry;
+			}
+		}
+		return null;
+	}
+
 	private static JsonArray quantityChanges(Map<Integer, Integer> before, Map<Integer, Integer> after)
 	{
 		Set<Integer> itemIds = new HashSet<>(before.keySet());

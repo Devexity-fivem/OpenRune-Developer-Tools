@@ -92,6 +92,7 @@ import net.runelite.api.TileItem;
 import net.runelite.api.TileObject;
 import net.runelite.api.World;
 import net.runelite.api.VarPlayer;
+import net.runelite.api.VarbitComposition;
 import net.runelite.api.WallObject;
 import net.runelite.api.gameval.InterfaceID;
 import net.runelite.api.gameval.InventoryID;
@@ -122,14 +123,22 @@ class McpTools
 	private final ClientThread clientThread;
 	private final DrawManager drawManager;
 	private final McpEventRecorder recorder;
+	private final McpMarkerOverlay markerOverlay;
 	private final Map<String, ToolDef> tools = new LinkedHashMap<>();
 
 	McpTools(Client client, ClientThread clientThread, DrawManager drawManager, McpEventRecorder recorder)
+	{
+		this(client, clientThread, drawManager, recorder, null);
+	}
+
+	McpTools(Client client, ClientThread clientThread, DrawManager drawManager,
+		McpEventRecorder recorder, McpMarkerOverlay markerOverlay)
 	{
 		this.client = client;
 		this.clientThread = clientThread;
 		this.drawManager = drawManager;
 		this.recorder = recorder;
+		this.markerOverlay = markerOverlay;
 		registerTools();
 	}
 
@@ -1008,10 +1017,79 @@ class McpTools
 				"rebaseline", "boolean", "Overwrite the stored baseline instead of comparing")),
 			args -> compareScreenshot(args));
 
+		register("widget_op",
+			"Invoke a named widget action directly (no mouse): resolves the widget, finds option in its actions list (or opIndex position), and fires CC_OP. Use for buttons/list rows/item ops anywhere a widget exposes actions. Returns the action invoked.",
+			schema(props(
+				"componentId", "integer", "Packed component id of the widget (or its container)",
+				"childIndex", "integer", "Dynamic-child index inside the container (e.g. list row / item slot)",
+				"option", "string", "Case-insensitive substring of the action to fire, e.g. 'Wear'",
+				"opIndex", "integer", "Fire the Nth action (0-based) instead of matching by name")),
+			args -> widgetOp(args));
+
+		register("get_actor",
+			"Deep inspect one actor by npcIndex, npcName or playerName: position, animations, facing, health, overhead text, target, spot anims, canvas position, and NPC id/composition.",
+			schema(props(
+				"npcIndex", "integer", "NPC index from list_npcs",
+				"npcName", "string", "NPC name substring (first match wins)",
+				"playerName", "string", "Player name substring (exact name preferred)")),
+			args -> getActor(args));
+
+		register("get_tile",
+			"Inspect a single world tile: all objects (game/wall/decorative/ground) with actions, ground items, collision flags and walkability. Cheaper and more precise than list_* for a known tile.",
+			schema(props(
+				"x", "integer", "World x",
+				"y", "integer", "World y",
+				"plane", "integer", "Plane (default: current)")),
+			args -> getTile(args));
+
+		register("set_var",
+			"Write a client-side var (varp/varbit/varcint/varcstr) for UI/state testing. CLIENT-SIDE ONLY: the server will overwrite it on the next sync; get_var.serverValue exposes what the server last sent. Returns old->new.",
+			schema(props(
+				"type", "string", "varbit, varp, varcint or varcstr",
+				"id", "integer", "Var id",
+				"value", "string", "New value (integer for all but varcstr)"),
+				"type", "id", "value"),
+			args -> setVar(args));
+
+		register("toggle_run",
+			"Toggle run mode by clicking the run orb. Returns energy and run state after the click.",
+			schema(props()),
+			args -> toggleRun());
+
+		register("mark_tile",
+			"Draw a persistent highlighted tile in the game scene so a human watching the client can see what an agent is pointing at. Optional label, colour and tick expiry.",
+			schema(props(
+				"name", "string", "Marker id (default 'mark'); reuse replaces it",
+				"x", "integer", "World x",
+				"y", "integer", "World y",
+				"plane", "integer", "Plane (default: current)",
+				"label", "string", "Text drawn above the tile",
+				"color", "string", "Hex colour, e.g. '#ff0000' or '0xff0000' (default yellow)",
+				"ticks", "integer", "Auto-remove after N game ticks (default 120; 0 = never)"),
+				"x", "y"),
+			args -> markTile(args));
+
+		register("mark_widget",
+			"Draw a persistent rectangle around a widget so a human can see which component an agent is referencing.",
+			schema(props(
+				"name", "string", "Marker id (default 'mark'); reuse replaces it",
+				"componentId", "integer", "Packed component id",
+				"childIndex", "integer", "Dynamic-child index to mark instead of the whole widget",
+				"label", "string", "Text drawn above the rectangle",
+				"color", "string", "Hex colour (default yellow)",
+				"ticks", "integer", "Auto-remove after N game ticks (default 120; 0 = never)"),
+				"componentId"),
+			args -> markWidget(args));
+
+		register("clear_marks",
+			"Remove overlay markers: one by name, or all when name is omitted.",
+			schema(props("name", "string", "Marker id to remove")),
+			args -> clearMarks(args));
+
 		register("wait_for",
 			"Block until a game condition is met, checked every 100ms - returns the moment it happens. Use this after walk_to/interact/attack instead of taking screenshots or guessing delays. Event-based conditions only see NEW events since the call started. Returns met:false with current state on timeout.",
 			schema(props(
-				"condition", "string", "What to wait for: idle, at_tile, npc_dead, dialogue, interface_open / interface_closed, chat_message, hitsplat, projectile, animation, spotanim, var, in_combat / out_of_combat, prayer, ticks, spawn / despawn / transform, loot, overhead, xp, container, action, world",
+				"condition", "string", "What to wait for: idle, at_tile, npc_dead, dialogue, interface_open / interface_closed, chat_message, hitsplat, projectile, animation, spotanim, var, in_combat / out_of_combat, prayer, ticks, spawn / despawn / transform, loot, overhead, xp, container, action, world, stat, menu",
 				"timeoutMs", "integer", "Give up after this long (default 10000, max 60000)",
 				"x", "integer", "at_tile: world x",
 				"y", "integer", "at_tile: world y",
@@ -1025,10 +1103,10 @@ class McpTools
 				"projectileId", "integer", "projectile: exact projectile (gfx) id to wait for",
 				"type", "string", "var: varbit, varp, varcint or varcstr",
 				"id", "integer", "var: varbit/varp/varc id",
-				"value", "integer", "var: value to wait for (exact match)",
+				"value", "integer", "var: value to wait for (exact match; omit to wait for ANY change from baseline)",
 				"prayer", "string", "prayer: Prayer enum name, e.g. PROTECT_FROM_MAGIC",
 				"on", "boolean", "prayer: wait for active (default true) or inactive",
-				"skill", "string", "xp: skill name, e.g. ATTACK",
+				"skill", "string", "xp/stat: skill name, e.g. ATTACK (stat waits for any boosted/real level change)",
 				"amount", "integer", "xp: xp gained to wait for (default 1)",
 				"containerId", "integer", "container: item container id (default 93 inventory)",
 				"itemId", "integer", "container: item id whose count change to wait for",
@@ -1212,6 +1290,8 @@ class McpTools
 			JsonObject o = new JsonObject();
 			o.addProperty("gameState", client.getGameState().name());
 			o.addProperty("tick", client.getTickCount());
+			o.addProperty("fps", client.getFPS());
+			o.addProperty("markers", markerOverlay != null ? markerOverlay.count() : 0);
 			Player local = client.getLocalPlayer();
 			o.addProperty("loggedIn", local != null);
 			if (local != null && local.getWorldLocation() != null)
@@ -5090,6 +5170,364 @@ class McpTools
 		return null;
 	}
 
+	private JsonObject widgetOp(JsonObject args) throws Exception
+	{
+		int componentId = args.get("componentId").getAsInt();
+		Integer childIndex = args.has("childIndex") ? args.get("childIndex").getAsInt() : null;
+		String option = args.has("option") ? args.get("option").getAsString() : null;
+		Integer opIndex = args.has("opIndex") ? args.get("opIndex").getAsInt() : null;
+		if (option == null && opIndex == null)
+		{
+			throw new IllegalArgumentException("widget_op requires option or opIndex");
+		}
+		return onClientThread(() ->
+		{
+			Widget w = client.getWidget(componentId);
+			if (w != null && childIndex != null)
+			{
+				Widget[] children = w.getDynamicChildren();
+				w = children != null && childIndex >= 0 && childIndex < children.length
+					? children[childIndex] : null;
+			}
+			if (w == null)
+			{
+				throw new IllegalArgumentException("Widget not found: " + componentId
+					+ (childIndex != null ? " child " + childIndex : ""));
+			}
+			String[] actions = w.getActions();
+			int idx;
+			if (opIndex != null)
+			{
+				idx = opIndex;
+				if (actions == null || idx < 0 || idx >= actions.length || actions[idx] == null)
+				{
+					throw new IllegalArgumentException("Widget has no action at opIndex " + idx);
+				}
+			}
+			else
+			{
+				idx = -1;
+				if (actions != null)
+				{
+					String lower = option.toLowerCase();
+					for (int i = 0; i < actions.length; i++)
+					{
+						if (actions[i] != null && Text.removeTags(actions[i]).toLowerCase().contains(lower))
+						{
+							idx = i;
+							break;
+						}
+					}
+				}
+				if (idx < 0)
+				{
+					throw new IllegalArgumentException("Widget has no action matching '" + option + "'");
+				}
+			}
+			client.menuAction(w.getIndex(), componentId,
+				idx < 5 ? MenuAction.CC_OP : MenuAction.CC_OP_LOW_PRIORITY,
+				idx + 1, -1, actions[idx], w.getName());
+			JsonObject result = new JsonObject();
+			result.addProperty("invoked", Text.removeTags(actions[idx]));
+			result.addProperty("opIndex", idx);
+			result.addProperty("componentId", componentId);
+			if (childIndex != null)
+			{
+				result.addProperty("childIndex", childIndex);
+			}
+			return result;
+		});
+	}
+
+	private JsonObject getActor(JsonObject args) throws Exception
+	{
+		return onClientThread(() ->
+		{
+			Actor actor;
+			if (args.has("playerName"))
+			{
+				String name = args.get("playerName").getAsString().toLowerCase();
+				actor = null;
+				for (Player p : client.getPlayers())
+				{
+					if (p != null && p.getName() != null
+						&& p.getName().toLowerCase().contains(name))
+					{
+						actor = p;
+						if (p.getName().equalsIgnoreCase(name))
+						{
+							break;
+						}
+					}
+				}
+				if (actor == null)
+				{
+					throw new IllegalArgumentException("No player matching '" + name + "'");
+				}
+			}
+			else
+			{
+				actor = findNpc(args);
+				if (actor == null)
+				{
+					throw new IllegalArgumentException("NPC not found");
+				}
+			}
+			JsonObject o = describeActor(actor, null, Integer.MAX_VALUE);
+			o.addProperty("type", actor instanceof NPC ? "npc" : "player");
+			if (actor instanceof NPC)
+			{
+				NPC npc = (NPC) actor;
+				o.addProperty("index", npc.getIndex());
+				o.addProperty("npcId", npc.getId());
+				NPCComposition comp = npc.getTransformedComposition();
+				if (comp != null)
+				{
+					o.addProperty("size", comp.getSize());
+					o.addProperty("transformation", comp.getId() != npc.getId());
+				}
+			}
+			else
+			{
+				Player p = (Player) actor;
+				o.addProperty("team", p.getTeam());
+				o.addProperty("local", p == client.getLocalPlayer());
+			}
+			if (actor.getOverheadText() != null)
+			{
+				o.addProperty("overheadText", Text.removeTags(actor.getOverheadText()));
+			}
+			return o;
+		});
+	}
+
+	private JsonObject getTile(JsonObject args) throws Exception
+	{
+		int x = args.get("x").getAsInt();
+		int y = args.get("y").getAsInt();
+		Integer planeArg = args.has("plane") ? args.get("plane").getAsInt() : null;
+		return onClientThread(() ->
+		{
+			int plane = planeArg != null ? planeArg : client.getPlane();
+			LocalPoint lp = LocalPoint.fromWorld(client, new WorldPoint(x, y, plane));
+			if (lp == null)
+			{
+				throw new IllegalArgumentException("Tile " + x + "," + y + "," + plane + " is not in the loaded scene");
+			}
+			Tile tile = client.getScene().getTiles()[plane][lp.getSceneX()][lp.getSceneY()];
+			JsonObject result = new JsonObject();
+			result.addProperty("x", x);
+			result.addProperty("y", y);
+			result.addProperty("plane", plane);
+			int[][] flags = client.getCollisionMaps()[plane].getFlags();
+			int flag = flags[lp.getSceneX()][lp.getSceneY()];
+			result.addProperty("collisionFlags", flag);
+			result.addProperty("walkable", (flag & CollisionDataFlag.BLOCK_MOVEMENT_FULL) == 0);
+			if (tile == null)
+			{
+				return result;
+			}
+			JsonArray objects = new JsonArray();
+			if (tile.getGameObjects() != null)
+			{
+				for (GameObject go : tile.getGameObjects())
+				{
+					if (go != null)
+					{
+						objects.add(describeTileObject("game", go, null, null, null, Integer.MAX_VALUE));
+					}
+				}
+			}
+			if (tile.getWallObject() != null)
+			{
+				objects.add(describeTileObject("wall", tile.getWallObject(), null, null, null, Integer.MAX_VALUE));
+			}
+			if (tile.getDecorativeObject() != null)
+			{
+				objects.add(describeTileObject("decorative", tile.getDecorativeObject(), null, null, null, Integer.MAX_VALUE));
+			}
+			if (tile.getGroundObject() != null)
+			{
+				objects.add(describeTileObject("ground", tile.getGroundObject(), null, null, null, Integer.MAX_VALUE));
+			}
+			if (objects.size() > 0)
+			{
+				result.add("objects", objects);
+			}
+			List<TileItem> items = tile.getGroundItems();
+			if (items != null && !items.isEmpty())
+			{
+				JsonArray arr = new JsonArray();
+				for (TileItem item : items)
+				{
+					JsonObject o = new JsonObject();
+					o.addProperty("itemId", item.getId());
+					o.addProperty("quantity", item.getQuantity());
+					ItemComposition comp = client.getItemDefinition(item.getId());
+					if (comp != null)
+					{
+						o.addProperty("name", comp.getName());
+					}
+					arr.add(o);
+				}
+				result.add("groundItems", arr);
+			}
+			return result;
+		});
+	}
+
+	private JsonObject setVar(JsonObject args) throws Exception
+	{
+		String type = args.get("type").getAsString();
+		int id = args.get("id").getAsInt();
+		String raw = args.get("value").getAsString();
+		return onClientThread(() ->
+		{
+			JsonObject result = new JsonObject();
+			result.addProperty("type", type);
+			result.addProperty("id", id);
+			switch (type)
+			{
+				case "varp":
+				{
+					int v = Integer.parseInt(raw);
+					result.addProperty("old", client.getVarpValue(id));
+					client.setVarpValue(id, v);
+					client.queueChangedVarp(id);
+					result.addProperty("new", v);
+					break;
+				}
+				case "varbit":
+				{
+					int v = Integer.parseInt(raw);
+					VarbitComposition comp = client.getVarbit(id);
+					if (comp == null)
+					{
+						throw new IllegalArgumentException("Unknown varbit " + id);
+					}
+					result.addProperty("old", client.getVarbitValue(id));
+					client.setVarbitValue(client.getVarps(), id, v);
+					client.queueChangedVarp(comp.getIndex());
+					result.addProperty("new", v);
+					result.addProperty("varpIndex", comp.getIndex());
+					break;
+				}
+				case "varcint":
+				{
+					int v = Integer.parseInt(raw);
+					result.addProperty("old", client.getVarcIntValue(id));
+					client.setVarcIntValue(id, v);
+					result.addProperty("new", v);
+					break;
+				}
+				case "varcstr":
+				{
+					result.addProperty("old", client.getVarcStrValue(id));
+					client.setVarcStrValue(id, raw);
+					result.addProperty("new", raw);
+					break;
+				}
+				default:
+					throw new IllegalArgumentException("type must be varbit, varp, varcint or varcstr");
+			}
+			result.addProperty("note", "Client-side only - the server overwrites it on the next var sync");
+			return result;
+		});
+	}
+
+	private JsonObject toggleRun() throws Exception
+	{
+		Point p = onClientThread(() ->
+		{
+			Widget button = client.getWidget(InterfaceID.Orbs.RUNBUTTON);
+			if (button == null || button.isHidden())
+			{
+				throw new IllegalStateException("Run orb is not visible");
+			}
+			Rectangle b = button.getBounds();
+			if (b == null || b.width <= 0)
+			{
+				throw new IllegalStateException("Run orb has no bounds");
+			}
+			return new Point(b.x + b.width / 2, b.y + b.height / 2);
+		});
+		clickAt(p.x, p.y, MouseEvent.BUTTON1);
+		return onClientThread(() ->
+		{
+			JsonObject result = new JsonObject();
+			result.addProperty("runEnergy", client.getEnergy());
+			result.addProperty("running", client.getVarpValue(VarPlayerID.OPTION_RUN) != 0);
+			return result;
+		});
+	}
+
+	private int markerColor(JsonObject args)
+	{
+		if (!args.has("color"))
+		{
+			return McpMarkerOverlay.DEFAULT_COLOR;
+		}
+		String raw = args.get("color").getAsString().trim();
+		if (raw.startsWith("#"))
+		{
+			raw = raw.substring(1);
+		}
+		return (int) Long.parseLong(raw, 16);
+	}
+
+	private JsonObject markTile(JsonObject args) throws Exception
+	{
+		if (markerOverlay == null)
+		{
+			throw new IllegalStateException("Marker overlay is not available");
+		}
+		String name = args.has("name") ? args.get("name").getAsString() : "mark";
+		int x = args.get("x").getAsInt();
+		int y = args.get("y").getAsInt();
+		int plane = args.has("plane") ? args.get("plane").getAsInt()
+			: onClientThread(() -> client.getPlane());
+		String label = args.has("label") ? args.get("label").getAsString() : null;
+		int color = markerColor(args);
+		int ticks = optInt(args, "ticks", 120);
+		markerOverlay.markTile(name, x, y, plane, label, color, ticks);
+		JsonObject result = new JsonObject();
+		result.addProperty("marked", name);
+		result.addProperty("tile", x + "," + y + "," + plane);
+		return textResult(result);
+	}
+
+	private JsonObject markWidget(JsonObject args)
+	{
+		if (markerOverlay == null)
+		{
+			throw new IllegalStateException("Marker overlay is not available");
+		}
+		String name = args.has("name") ? args.get("name").getAsString() : "mark";
+		int componentId = args.get("componentId").getAsInt();
+		Integer childIndex = args.has("childIndex") ? args.get("childIndex").getAsInt() : null;
+		String label = args.has("label") ? args.get("label").getAsString() : null;
+		int color = markerColor(args);
+		int ticks = optInt(args, "ticks", 120);
+		markerOverlay.markWidget(name, componentId, childIndex, label, color, ticks);
+		JsonObject result = new JsonObject();
+		result.addProperty("marked", name);
+		result.addProperty("componentId", componentId);
+		return textResult(result);
+	}
+
+	private JsonObject clearMarks(JsonObject args)
+	{
+		if (markerOverlay == null)
+		{
+			throw new IllegalStateException("Marker overlay is not available");
+		}
+		String name = args.has("name") ? args.get("name").getAsString() : null;
+		int cleared = markerOverlay.clear(name);
+		JsonObject result = new JsonObject();
+		result.addProperty("cleared", cleared);
+		return textResult(result);
+	}
+
 	private JsonObject waitFor(JsonObject args) throws Exception
 	{
 		String condition = args.get("condition").getAsString();
@@ -5174,46 +5612,37 @@ class McpTools
 			case "chat_message":
 			{
 				String contains = args.get("textContains").getAsString().toLowerCase();
-				JsonObject history = recorder.chatHistory(
-					System.currentTimeMillis() - startMs, null, null, 100);
-				met = false;
-				for (JsonElement e : history.getAsJsonArray("events"))
+				JsonObject hit = recorder.firstEventSince("chat", startMs, e ->
+					e.has("message") && e.get("message").getAsString().toLowerCase().contains(contains));
+				met = hit != null;
+				if (hit != null)
 				{
-					String message = e.getAsJsonObject().get("message").getAsString();
-					if (message.toLowerCase().contains(contains))
-					{
-						met = true;
-						o.addProperty("message", message);
-						break;
-					}
+					o.addProperty("message", hit.get("message").getAsString());
 				}
 				break;
 			}
 			case "hitsplat":
 			{
-				String actorFilter = args.has("actorName") ? args.get("actorName").getAsString() : null;
-				JsonObject history = recorder.combatHistory(
-					System.currentTimeMillis() - startMs, actorFilter, 50);
-				met = false;
-				for (JsonElement e : history.getAsJsonArray("events"))
+				String actorFilter = args.has("actorName") ? args.get("actorName").getAsString().toLowerCase() : null;
+				JsonObject hit = recorder.firstEventSince("combat", startMs, e ->
+					actorFilter == null || (e.has("actor")
+						&& e.get("actor").getAsString().toLowerCase().contains(actorFilter)));
+				met = hit != null;
+				if (hit != null)
 				{
-					o.add("hitsplat", e);
-					met = true;
-					break;
+					o.add("hitsplat", hit);
 				}
 				break;
 			}
 			case "projectile":
 			{
 				Integer projectileId = args.has("projectileId") ? args.get("projectileId").getAsInt() : null;
-				JsonObject history = recorder.projectileHistory(
-					System.currentTimeMillis() - startMs, projectileId, 50);
-				met = false;
-				for (JsonElement e : history.getAsJsonArray("events"))
+				JsonObject hit = recorder.firstEventSince("projectile", startMs, e ->
+					projectileId == null || e.get("projectileId").getAsInt() == projectileId);
+				met = hit != null;
+				if (hit != null)
 				{
-					o.add("projectile", e);
-					met = true;
-					break;
+					o.add("projectile", hit);
 				}
 				break;
 			}
@@ -5221,47 +5650,45 @@ class McpTools
 			case "spotanim":
 			{
 				String kind = "animation".equals(condition) ? "animation" : "graphic";
-				String actorFilter = args.has("actorName") ? args.get("actorName").getAsString()
-					: args.has("npcName") ? args.get("npcName").getAsString() : null;
+				String actorFilter = args.has("actorName") ? args.get("actorName").getAsString().toLowerCase()
+					: args.has("npcName") ? args.get("npcName").getAsString().toLowerCase() : null;
 				Integer wantedId = args.has("animationId") ? args.get("animationId").getAsInt() : null;
-				JsonObject history = recorder.effectHistory(
-					System.currentTimeMillis() - startMs, kind, actorFilter, 50);
-				met = false;
-				for (JsonElement e : history.getAsJsonArray("events"))
+				JsonObject hit = recorder.firstEventSince("effect", startMs, e ->
 				{
-					JsonObject event = e.getAsJsonObject();
-					if (wantedId != null)
+					if (!kind.equals(e.get("kind").getAsString()))
 					{
-						JsonElement value = event.get("value");
-						if ("animation".equals(kind))
+						return false;
+					}
+					if (actorFilter != null && (!e.has("actor")
+						|| !e.get("actor").getAsString().toLowerCase().contains(actorFilter)))
+					{
+						return false;
+					}
+					if (wantedId == null)
+					{
+						return true;
+					}
+					JsonElement value = e.get("value");
+					if ("animation".equals(kind))
+					{
+						return value != null && value.isJsonPrimitive() && value.getAsInt() == wantedId;
+					}
+					if (value != null && value.isJsonArray())
+					{
+						for (JsonElement v : value.getAsJsonArray())
 						{
-							if (value == null || !value.isJsonPrimitive() || value.getAsInt() != wantedId)
+							if (v.getAsInt() == wantedId)
 							{
-								continue;
-							}
-						}
-						else
-						{
-							boolean hasId = false;
-							if (value != null && value.isJsonArray())
-							{
-								for (JsonElement v : value.getAsJsonArray())
-								{
-									if (v.getAsInt() == wantedId)
-									{
-										hasId = true;
-									}
-								}
-							}
-							if (!hasId)
-							{
-								continue;
+								return true;
 							}
 						}
 					}
-					o.add("effect", event);
-					met = true;
-					break;
+					return false;
+				});
+				met = hit != null;
+				if (hit != null)
+				{
+					o.add("effect", hit);
 				}
 				break;
 			}
@@ -5269,7 +5696,6 @@ class McpTools
 			{
 				String type = args.get("type").getAsString();
 				int id = args.get("id").getAsInt();
-				int wanted = args.get("value").getAsInt();
 				int current;
 				switch (type)
 				{
@@ -5285,8 +5711,54 @@ class McpTools
 					default:
 						throw new IllegalArgumentException("var condition supports varbit, varp, varcint (not " + type + ")");
 				}
-				met = current == wanted;
+				if (args.has("value"))
+				{
+					met = current == args.get("value").getAsInt();
+				}
+				else
+				{
+					// No expected value: wait for ANY change from the call-time baseline.
+					if (!args.has("_baselineVar"))
+					{
+						args.addProperty("_baselineVar", current);
+					}
+					met = current != args.get("_baselineVar").getAsInt();
+					o.addProperty("baseline", args.get("_baselineVar").getAsInt());
+				}
 				o.addProperty("current", current);
+				break;
+			}
+			case "stat":
+			{
+				String skillName = args.get("skill").getAsString().toUpperCase();
+				Skill skill;
+				try
+				{
+					skill = Skill.valueOf(skillName);
+				}
+				catch (IllegalArgumentException ex)
+				{
+					throw new IllegalArgumentException("Unknown skill: " + skillName);
+				}
+				if (!args.has("_baselineStat"))
+				{
+					args.addProperty("_baselineStat", client.getBoostedSkillLevel(skill));
+					args.addProperty("_baselineLevel", client.getRealSkillLevel(skill));
+				}
+				int boosted = client.getBoostedSkillLevel(skill);
+				int real = client.getRealSkillLevel(skill);
+				met = boosted != args.get("_baselineStat").getAsInt()
+					|| real != args.get("_baselineLevel").getAsInt();
+				o.addProperty("baselineBoosted", args.get("_baselineStat").getAsInt());
+				o.addProperty("boostedLevel", boosted);
+				o.addProperty("level", real);
+				break;
+			}
+			case "menu":
+			{
+				boolean open = client.isMenuOpen();
+				met = open;
+				o.addProperty("open", open);
 				break;
 			}
 			case "in_combat":
@@ -5318,46 +5790,52 @@ class McpTools
 			case "despawn":
 			case "transform":
 			{
-				String nameFilter = args.has("actorName") ? args.get("actorName").getAsString()
-					: args.has("npcName") ? args.get("npcName").getAsString() : null;
-				JsonObject history = recorder.spawnHistory(
-					System.currentTimeMillis() - startMs, condition, nameFilter, 50);
-				met = false;
-				for (JsonElement e : history.getAsJsonArray("events"))
+				String nameFilter = args.has("actorName") ? args.get("actorName").getAsString().toLowerCase()
+					: args.has("npcName") ? args.get("npcName").getAsString().toLowerCase() : null;
+				JsonObject hit = recorder.firstEventSince("spawn", startMs, e ->
+					condition.equalsIgnoreCase(e.get("kind").getAsString())
+						&& (nameFilter == null || (e.has("name")
+							&& e.get("name").getAsString().toLowerCase().contains(nameFilter))));
+				met = hit != null;
+				if (hit != null)
 				{
-					o.add("event", e);
-					met = true;
-					break;
+					o.add("event", hit);
 				}
 				break;
 			}
 			case "loot":
 			{
-				String nameFilter = args.has("itemName") ? args.get("itemName").getAsString()
-					: args.has("actorName") ? args.get("actorName").getAsString() : null;
-				JsonObject history = recorder.lootHistory(
-					System.currentTimeMillis() - startMs, "spawned", nameFilter, 50);
-				met = false;
-				for (JsonElement e : history.getAsJsonArray("events"))
+				String nameFilter = args.has("itemName") ? args.get("itemName").getAsString().toLowerCase()
+					: args.has("actorName") ? args.get("actorName").getAsString().toLowerCase() : null;
+				JsonObject hit = recorder.firstEventSince("loot", startMs, e ->
+					"spawned".equals(e.get("kind").getAsString())
+						&& (nameFilter == null || (e.has("name")
+							&& e.get("name").getAsString().toLowerCase().contains(nameFilter))));
+				met = hit != null;
+				if (hit != null)
 				{
-					o.add("event", e);
-					met = true;
-					break;
+					o.add("event", hit);
 				}
 				break;
 			}
 			case "overhead":
 			{
-				String filter = args.has("textContains") ? args.get("textContains").getAsString()
-					: args.has("actorName") ? args.get("actorName").getAsString() : null;
-				JsonObject history = recorder.overheadHistory(
-					System.currentTimeMillis() - startMs, filter, 50);
-				met = false;
-				for (JsonElement e : history.getAsJsonArray("events"))
+				String filter = args.has("textContains") ? args.get("textContains").getAsString().toLowerCase()
+					: args.has("actorName") ? args.get("actorName").getAsString().toLowerCase() : null;
+				JsonObject hit = recorder.firstEventSince("overhead", startMs, e ->
 				{
-					o.add("event", e);
-					met = true;
-					break;
+					if (filter == null)
+					{
+						return true;
+					}
+					String actor = e.has("actor") ? e.get("actor").getAsString().toLowerCase() : "";
+					String text = e.has("text") ? e.get("text").getAsString().toLowerCase() : "";
+					return actor.contains(filter) || text.contains(filter);
+				});
+				met = hit != null;
+				if (hit != null)
+				{
+					o.add("event", hit);
 				}
 				break;
 			}
@@ -5408,16 +5886,23 @@ class McpTools
 			}
 			case "action":
 			{
-				String filter = args.has("textContains") ? args.get("textContains").getAsString()
-					: args.has("filter") ? args.get("filter").getAsString() : null;
-				JsonObject history = recorder.actionHistory(
-					System.currentTimeMillis() - startMs, filter, 50);
-				met = false;
-				for (JsonElement e : history.getAsJsonArray("events"))
+				String filter = args.has("textContains") ? args.get("textContains").getAsString().toLowerCase()
+					: args.has("filter") ? args.get("filter").getAsString().toLowerCase() : null;
+				JsonObject hit = recorder.firstEventSince("action", startMs, e ->
 				{
-					o.add("action", e);
-					met = true;
-					break;
+					if (filter == null)
+					{
+						return true;
+					}
+					String option = e.has("option") ? e.get("option").getAsString().toLowerCase() : "";
+					String target = e.has("target") ? e.get("target").getAsString().toLowerCase() : "";
+					String type = e.get("type").getAsString().toLowerCase();
+					return option.contains(filter) || target.contains(filter) || type.contains(filter);
+				});
+				met = hit != null;
+				if (hit != null)
+				{
+					o.add("action", hit);
 				}
 				break;
 			}
@@ -5439,7 +5924,7 @@ class McpTools
 					+ " (idle, at_tile, npc_dead, dialogue, interface_open, interface_closed,"
 					+ " chat_message, hitsplat, projectile, animation, spotanim, var,"
 					+ " in_combat, out_of_combat, prayer, ticks, spawn, despawn, transform,"
-					+ " loot, overhead, xp, container, action, world)");
+					+ " loot, overhead, xp, container, action, world, stat, menu)");
 		}
 		o.addProperty("met", met);
 		return o;

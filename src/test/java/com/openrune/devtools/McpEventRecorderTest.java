@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class McpEventRecorderTest
@@ -226,6 +227,30 @@ class McpEventRecorderTest
 		recorder.reset();
 		assertEquals(0, recorder.interfaceHistory(60_000, null, null, 100).get("total").getAsInt());
 		assertEquals(0, recorder.actionHistory(60_000, null, 100).get("total").getAsInt());
+	}
+
+	@Test
+	void firstEventSinceReturnsNewestMatchAndRespectsCutoff()
+	{
+		recorder.recordChat("GAMEMESSAGE", null, null, "first", 1);
+		recorder.recordChat("GAMEMESSAGE", null, null, "second", 2);
+		recorder.recordChat("GAMEMESSAGE", null, null, "third", 3);
+
+		// Newest matching event wins.
+		JsonObject hit = recorder.firstEventSince("chat", 0, e -> true);
+		assertEquals("third", hit.get("message").getAsString());
+
+		// Predicate is honoured.
+		assertEquals("first", recorder.firstEventSince("chat", 0,
+			e -> e.get("message").getAsString().equals("first")).get("message").getAsString());
+		assertNull(recorder.firstEventSince("chat", 0, e -> false));
+
+		// Cutoff excludes everything older than it.
+		long cutoff = System.currentTimeMillis() + 60_000;
+		assertNull(recorder.firstEventSince("chat", cutoff, e -> true));
+
+		// Unknown channel is a miss, not an error.
+		assertNull(recorder.firstEventSince("bogus", 0, e -> true));
 	}
 
 	@Test

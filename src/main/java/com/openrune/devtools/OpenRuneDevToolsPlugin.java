@@ -48,6 +48,7 @@ import net.runelite.api.TileItem;
 import net.runelite.api.Projectile;
 import net.runelite.api.ScriptEvent;
 import net.runelite.api.coords.WorldPoint;
+import net.runelite.api.events.ActorDeath;
 import net.runelite.api.events.AnimationChanged;
 import net.runelite.api.events.AreaSoundEffectPlayed;
 import net.runelite.api.events.ChatMessage;
@@ -80,6 +81,7 @@ import net.runelite.client.events.ConfigChanged;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.ui.DrawManager;
+import net.runelite.client.ui.overlay.OverlayManager;
 
 @PluginDescriptor(
 	name = "OpenRune-DeveloperTools",
@@ -105,6 +107,12 @@ public class OpenRuneDevToolsPlugin extends Plugin
 	@Inject
 	private OkHttpClient okHttpClient;
 
+	@Inject
+	private OverlayManager overlayManager;
+
+	@Inject
+	private McpMarkerOverlay markerOverlay;
+
 	private McpHttpServer server;
 	private McpEventRecorder recorder;
 	private ItemIconTool itemIconTool;
@@ -117,6 +125,7 @@ public class OpenRuneDevToolsPlugin extends Plugin
 	{
 		recorder = new McpEventRecorder();
 		itemIconTool = new ItemIconTool(client, clientThread);
+		overlayManager.add(markerOverlay);
 		tryStartServer();
 		if (config.autoUpdate())
 		{
@@ -128,6 +137,8 @@ public class OpenRuneDevToolsPlugin extends Plugin
 	protected void shutDown()
 	{
 		stopServer();
+		overlayManager.remove(markerOverlay);
+		markerOverlay.clear(null);
 		recorder = null;
 		if (itemIconTool != null)
 		{
@@ -329,6 +340,21 @@ public class OpenRuneDevToolsPlugin extends Plugin
 	}
 
 	@Subscribe
+	public void onActorDeath(ActorDeath event)
+	{
+		Actor actor = event.getActor();
+		if (recorder == null || actor == null)
+		{
+			return;
+		}
+		WorldPoint wp = actor.getWorldLocation();
+		NPC npc = actor instanceof NPC ? (NPC) actor : null;
+		recorder.recordSpawn("death", npc != null ? "npc" : "player", actor.getName(),
+			npc != null ? npc.getIndex() : -1, npc != null ? npc.getId() : null, null,
+			wp != null ? wp.getX() : null, wp != null ? wp.getY() : null, client.getTickCount());
+	}
+
+	@Subscribe
 	public void onItemSpawned(ItemSpawned event)
 	{
 		recordGroundItem("spawned", event.getTile(), event.getItem());
@@ -487,7 +513,8 @@ public class OpenRuneDevToolsPlugin extends Plugin
 
 	private void startServer() throws Exception
 	{
-		McpHttpServer started = new McpHttpServer(config.port(), new McpTools(client, clientThread, drawManager, recorder));
+		McpHttpServer started = new McpHttpServer(config.port(),
+			new McpTools(client, clientThread, drawManager, recorder, markerOverlay));
 		started.start();
 		server = started;
 		log.info("MCP server listening on http://127.0.0.1:{}/mcp", config.port());

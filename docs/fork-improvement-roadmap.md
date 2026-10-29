@@ -185,6 +185,8 @@ All changes on `devexity-mcp-improvements`, version bumped to `0.2.0`.
 - Grand Exchange offer tools (GE not present on most RSPS targets).
 - `use_item` on-targets require the target to be hoverable on canvas; off-screen
   targets still need `invoke_menu_action` by hand.
+- Direct `player_action` — `Player` exposes no `getActions()` and player ops
+  are dynamic; hover-based `interact_player` remains the correct path.
 
 ## 5b. Second batch (post-`fb9d9af`)
 
@@ -245,10 +247,60 @@ evidence/inspection tooling.
   `world` (world id changed — pairs with `hop_world`).
 - Refactor: `bankAction`/`shop_action`/`trade_action` share `itemSlotAction`.
 
+## 5d. Fourth batch (97 tools) — efficiency + remaining utility
+
+**Efficiency**: `wait_for` event conditions no longer build a full bounded
+history response per 100 ms poll. `McpEventRecorder.firstEventSince` scans a
+channel buffer newest-first under the recorder lock and stops at the first
+match or the call-time cutoff — no `windowMs`/`dropped`/limit bookkeeping per
+poll, early exit on first hit. Applied to: chat_message, hitsplat, projectile,
+animation, spotanim, spawn/despawn/transform, loot, overhead, action.
+Semantics unchanged (only events newer than call start are seen; verified by
+recorder test covering match/cutoff/unknown-channel paths). `xp`, `container`,
+`var`, `stat`, `menu` conditions read live state directly — already cheap.
+
+**New tools (8)**:
+
+- `widget_op` — invoke a named widget action directly: `componentId`
+  (+`childIndex`) → find `option` in the widget's actions (or `opIndex`) →
+  CC_OP. Covers every actioned widget, no mouse.
+- `get_actor` — deep inspect one actor: npcIndex/npcName/playerName →
+  describeActor + NPC index/id/transform/size, player team/local flag,
+  overhead text.
+- `get_tile` — one world tile fully: game/wall/decorative/ground objects via
+  `describeTileObject`, ground items, collision flags, walkability.
+- `set_var` — client-side write of varp/varbit/varcint/varcstr with
+  `queueChangedVarp` (varbit queues the backing varp index). Returns
+  old→new; `get_var.serverValue` distinguishes server truth.
+- `toggle_run` — clicks the run orb (same pattern as `toggle_special_attack`);
+  returns energy + `VarPlayerID.OPTION_RUN` state.
+- `mark_tile` / `mark_widget` / `clear_marks` — `McpMarkerOverlay`
+  (ABOVE_SCENE, DYNAMIC, HIGH) draws tile outlines and widget rectangles with
+  labels, hex colours, and tick-based expiry so a human watching the client
+  can see what an automated agent is pointing at. Injected into `McpTools`;
+  the 4-arg test constructor passes null (marker tools then report
+  unavailable).
+
+**wait_for additions**: `stat` (boosted or real level change vs call-time
+baseline), `menu` (menu open), and `var` with `value` omitted waits for ANY
+change from the call-time baseline (baseline captured lazily on first poll so
+it reflects call time, not register time).
+
+**Plugin**: `ActorDeath` → `recordSpawn("death", ...)` merges actor deaths
+into the spawn channel; `McpMarkerOverlay` injected, added/removed in
+startUp/shutDown, cleared on shutdown.
+
+Rejected this pass: direct `player_action` — `Player` has no `getActions()`
+and player ops are dynamic (Follow/Trade/attackable Attack/server-added), so
+option→opIndex mapping is guesswork; hover-based `interact_player` remains
+correct.
+
 ## 6. Test matrix
 
-`./gradlew build` → **34 tests, all green** (JDK 21 toolchain, Java 11 target).
-The tool-list test now asserts all batch-1/2/3 tool names.
+`./gradlew build` → **35 tests, all green** (JDK 21 toolchain, Java 11 target).
+The tool-list test asserts all batch-1/2/3/4 tool names; the new
+`firstEventSinceReturnsNewestMatchAndRespectsCutoff` test covers the
+early-exit scan (newest match, predicate, cutoff, unknown channel).
 
 - `McpEventRecorderTest` (11): var dedupe + oldValue, buffer cap + `dropped`
   accounting, newest-first limits, chat filters, combat-tick separation,

@@ -98,7 +98,7 @@ anything by itself.
 | `get_widget_at` | Deepest visible widget at a canvas pixel, with parent chain |
 | `set_widget` | Live-edit a widget client-side: move, resize, hide, retext, recolor, then revalidate |
 | `get_client_state` | Game state, canvas size, mouse, player position/region, energy, weight, camera, menu-open flag |
-| `get_status` | Server + session status: plugin version, tool count, game state, tick, position — check this first when a tool behaves oddly |
+| `get_status` | Server + session status: plugin version, tool count, fps, game state, tick, position, active markers — check this first when a tool behaves oddly |
 | `observe` | One client-thread pass: vitals, boosts, combat, inventory (with item ops), nearest NPCs/objects/ground items, dialogue. Optional `sections`: equipment, skills, players, projectiles |
 | `get_combat_state` | Cheap combat poll: in-combat flag (Idle Notifier timing), attackers, target, active prayers, ticks since last hit dealt/received |
 | `get_skills` | All skills: level, boosted level, xp, total level |
@@ -127,6 +127,8 @@ anything by itself.
 | `list_projectiles` | Projectiles in flight with target info |
 | `get_inventory` | Any item container by id (93 inventory, 94 worn, 95 bank, custom) with slots/names/quantities |
 | `list_inventories` | All loaded item containers |
+| `get_actor` | Deep inspect one actor (npcIndex/npcName/playerName): animations, facing, health, overhead text, target, spot anims, canvas pos, NPC id/transform state |
+| `get_tile` | One world tile fully: all object kinds with actions, ground items, collision flags, walkability — precise alternative to list_* when the tile is known |
 
 ### Interaction (one call, no screenshots)
 
@@ -140,6 +142,7 @@ anything by itself.
 | `object_action` | Invoke a scene object's op directly by objectId + world x/y — object need not be on screen, mouse never moves |
 | `interact_player` | Hover a player and click an option (Trade with, Follow...) |
 | `widget_action` | Right-click any widget and click a menu option (spells, prayers, buttons) |
+| `widget_op` | Invoke a named widget action directly — resolve `componentId` (+optional `childIndex`), find `option` in its actions list (or `opIndex`), fire CC_OP. No mouse, works for any actioned widget |
 | `set_prayer` | Toggle a prayer by name (exact Prayer enum name or fuzzy prayer-book label) via the real prayer-book widget |
 | `invoke_menu_action` | Raw `menuAction` escape hatch with explicit params |
 | `get_menu` | The currently built menu entries with option/target/type/params — inspect before `click_menu_option`, or get real packet fields for `invoke_menu_action` |
@@ -206,6 +209,7 @@ listed — use `item_action`/`invoke_menu_action` for those deliberately.
 | `get_attack_style` / `set_attack_style` | Read/click combat-tab attack styles by name or index |
 | `list_spells` / `cast_spell` | Spellbook contents; cast a spell by fuzzy name |
 | `bank_action` | Withdraw/deposit ops directly on bank widgets while the bank is open |
+| `toggle_run` | Click the run orb; returns energy and run state (`VarPlayerID.OPTION_RUN`) |
 
 ### World extras
 
@@ -234,6 +238,15 @@ listed — use `item_action`/`invoke_menu_action` for those deliberately.
 | `get_script_history` | Clientscripts fired recently: per-script counts + events with tick and args |
 | `get_var_history` | Varbit/varp/varc changes with old/new values, tick, timestamp |
 | `get_var` | Current value of a varbit, varp, varc int or varc string; varp/varbit also report `serverValue` — the last value the server sent, so client-side overrides are visible |
+| `set_var` | Write a varp/varbit/varcint/varcstr client-side (UI/state testing). Server overwrites it on next sync — compare with `get_var.serverValue` |
+
+### Markers (visual aid for humans watching the client)
+
+| Tool | Description |
+|---|---|
+| `mark_tile` | Highlight a world tile in-scene (outline + fill) with optional label/colour/tick expiry — shows what an agent is pointing at |
+| `mark_widget` | Draw a rectangle around a widget/component so a human can see which component is being referenced |
+| `clear_marks` | Remove one marker by name, or all |
 | `get_projectile_history` | Projectiles launched recently, one entry each, with values and target |
 | `get_effect_history` | Animations and graphics played by NPCs/players recently |
 | `get_chat_history` | Chatbox messages: type, sender, message, tick, timestamp |
@@ -252,7 +265,7 @@ listed — use `item_action`/`invoke_menu_action` for those deliberately.
 
 | Tool | Description |
 |---|---|
-| `wait_for` | Block until a condition: idle, at_tile, npc_dead, dialogue, interface_open/closed, chat_message, hitsplat, projectile, animation, spotanim, var, in_combat/out_of_combat, prayer, ticks, spawn/despawn/transform, loot, overhead, xp, container, action, world — checked every 100ms, returns immediately when met. Event-based conditions only see new events after the call starts |
+| `wait_for` | Block until a condition: idle, at_tile, npc_dead, dialogue, interface_open/closed, chat_message, hitsplat, projectile, animation, spotanim, var (exact value, or omit `value` for any change), stat (boosted/real level change), menu (menu open), in_combat/out_of_combat, prayer, ticks, spawn/despawn/transform, loot, overhead, xp, container, action, world — checked every 100ms via an early-exit event scan, returns immediately when met. Event-based conditions only see new events after the call starts |
 
 All history tools report a `dropped` count — how many events were evicted from
 the bounded buffer — so truncation is visible instead of silent.
