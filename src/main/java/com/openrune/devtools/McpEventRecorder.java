@@ -62,6 +62,11 @@ class McpEventRecorder
 	private static final int OVERHEAD_BUFFER = 500;
 	private static final int INTERFACE_BUFFER = 1000;
 	private static final int ACTION_BUFFER = 1000;
+	private static final int OBJECT_BUFFER = 1000;
+	private static final int GFX_BUFFER = 500;
+	private static final int INTERACT_BUFFER = 500;
+	private static final int SOCIAL_BUFFER = 500;
+	private static final int WORLD_BUFFER = 200;
 	private static final int MAX_ARGS_LENGTH = 160;
 	private static final int MAX_COUNT_ROWS = 50;
 
@@ -80,6 +85,11 @@ class McpEventRecorder
 	private final Deque<JsonObject> overheads = new ArrayDeque<>();
 	private final Deque<JsonObject> interfaces = new ArrayDeque<>();
 	private final Deque<JsonObject> actions = new ArrayDeque<>();
+	private final Deque<JsonObject> objects = new ArrayDeque<>();
+	private final Deque<JsonObject> gfx = new ArrayDeque<>();
+	private final Deque<JsonObject> interact = new ArrayDeque<>();
+	private final Deque<JsonObject> social = new ArrayDeque<>();
+	private final Deque<JsonObject> world = new ArrayDeque<>();
 	private final Map<String, Integer> lastIntValues = new HashMap<>();
 	private final Map<Integer, String> lastStrValues = new HashMap<>();
 	private final Map<String, Integer> lastSkillXp = new HashMap<>();
@@ -116,6 +126,11 @@ class McpEventRecorder
 		overheads.clear();
 		interfaces.clear();
 		actions.clear();
+		objects.clear();
+		gfx.clear();
+		interact.clear();
+		social.clear();
+		world.clear();
 		droppedByChannel.clear();
 		lastHitOnMeTick = -1;
 		lastMyHitTick = -1;
@@ -285,6 +300,19 @@ class McpEventRecorder
 		push(experience, XP_BUFFER, entry);
 	}
 
+	/**
+	 * Fake XP drops (FakeXpDrop) — private servers use these as damage counters;
+	 * recorded into the experience channel with fake:true to distinguish them.
+	 */
+	synchronized void recordFakeXp(String skill, int xp, int tick)
+	{
+		JsonObject entry = baseEntry("experience", tick);
+		entry.addProperty("skill", skill);
+		entry.addProperty("fake", true);
+		entry.addProperty("xpGained", xp);
+		push(experience, XP_BUFFER, entry);
+	}
+
 	synchronized void recordContainer(int containerId, Map<Integer, Integer> contents, int tick)
 	{
 		Map<Integer, Integer> previous = lastContainerContents.put(containerId, contents);
@@ -400,6 +428,15 @@ class McpEventRecorder
 		push(interfaces, INTERFACE_BUFFER, entry);
 	}
 
+	/** Right-click menu openings, recorded into the interface channel. */
+	synchronized void recordInterfaceMenu(int entryCount, int tick)
+	{
+		JsonObject entry = baseEntry("interface", tick);
+		entry.addProperty("kind", "menu_opened");
+		entry.addProperty("entryCount", entryCount);
+		push(interfaces, INTERFACE_BUFFER, entry);
+	}
+
 	/**
 	 * Menu options the client actually invoked (MenuOptionClicked) — the audit trail of
 	 * what packet left the client: option, target, MenuAction type and raw params.
@@ -422,6 +459,169 @@ class McpEventRecorder
 			entry.addProperty("itemId", itemId);
 		}
 		push(actions, ACTION_BUFFER, entry);
+	}
+
+	/**
+	 * Scene object lifecycle: spawned/despawned for game, wall, decorative and
+	 * ground objects — boss-arena objects appearing/disappearing mid-fight.
+	 */
+	synchronized void recordObject(String kind, String objectType, int id, String name,
+		Integer x, Integer y, Integer plane, int tick)
+	{
+		JsonObject entry = baseEntry("object", tick);
+		entry.addProperty("kind", kind);
+		entry.addProperty("objectType", objectType);
+		entry.addProperty("objectId", id);
+		if (name != null && !"null".equals(name))
+		{
+			entry.addProperty("name", name);
+		}
+		if (x != null && y != null)
+		{
+			entry.addProperty("x", x);
+			entry.addProperty("y", y);
+		}
+		if (plane != null)
+		{
+			entry.addProperty("plane", plane);
+		}
+		push(objects, OBJECT_BUFFER, entry);
+	}
+
+	/** Graphics objects (unattached spotanims — ground-targeted AoE telegraphs). */
+	synchronized void recordGfx(int id, Integer x, Integer y, Integer level, int tick)
+	{
+		JsonObject entry = baseEntry("gfx", tick);
+		entry.addProperty("gfxId", id);
+		if (x != null && y != null)
+		{
+			entry.addProperty("x", x);
+			entry.addProperty("y", y);
+		}
+		if (level != null)
+		{
+			entry.addProperty("plane", level);
+		}
+		push(gfx, GFX_BUFFER, entry);
+	}
+
+	/**
+	 * Actor target changes (InteractingChanged): source acquired or dropped a
+	 * target — tank swaps, NPC retargets. target fields absent when cleared.
+	 */
+	synchronized void recordInteract(String sourceType, String sourceName, int sourceIndex,
+		String targetType, String targetName, int targetIndex, int tick)
+	{
+		JsonObject entry = baseEntry("interact", tick);
+		entry.addProperty("sourceType", sourceType);
+		if (sourceName != null)
+		{
+			entry.addProperty("source", sourceName);
+		}
+		entry.addProperty("sourceIndex", sourceIndex);
+		if (targetName != null)
+		{
+			entry.addProperty("targetType", targetType);
+			entry.addProperty("target", targetName);
+			entry.addProperty("targetIndex", targetIndex);
+		}
+		else
+		{
+			entry.addProperty("cleared", true);
+		}
+		push(interact, INTERACT_BUFFER, entry);
+	}
+
+	/**
+	 * Social events: clan channel join/leave, clan + friends-chat member
+	 * join/leave. kind carries the specific event; name/detail are member/channel.
+	 */
+	synchronized void recordSocial(String kind, String name, String detail, int tick)
+	{
+		JsonObject entry = baseEntry("social", tick);
+		entry.addProperty("kind", kind);
+		if (name != null && !name.isEmpty())
+		{
+			entry.addProperty("name", name);
+		}
+		if (detail != null && !detail.isEmpty())
+		{
+			entry.addProperty("detail", detail);
+		}
+		push(social, SOCIAL_BUFFER, entry);
+	}
+
+	/** World/session events: world_changed, mapload (instanced region loads). */
+	synchronized void recordWorld(String kind, Integer worldId, String detail, int tick)
+	{
+		JsonObject entry = baseEntry("world", tick);
+		entry.addProperty("kind", kind);
+		if (worldId != null)
+		{
+			entry.addProperty("worldId", worldId);
+		}
+		if (detail != null && !detail.isEmpty())
+		{
+			entry.addProperty("detail", detail);
+		}
+		push(world, WORLD_BUFFER, entry);
+	}
+
+	/**
+	 * Generic channel query for the object/gfx/interact/social/world buffers:
+	 * entries since {@code windowMs}, optionally requiring field {@code matchField}
+	 * to contain {@code matchValue} (case-insensitive), newest-limited.
+	 */
+	synchronized JsonObject channelHistory(String channel, long sinceMs,
+		String matchField, String matchValue, int limit)
+	{
+		Deque<JsonObject> buffer = channelBuffers().get(channel);
+		JsonObject result = new JsonObject();
+		result.addProperty("channel", channel);
+		result.addProperty("windowMs", sinceMs);
+		result.add("events", new JsonArray());
+		if (buffer == null)
+		{
+			result.addProperty("total", 0);
+			result.addProperty("dropped", 0);
+			return result;
+		}
+		long cutoff = System.currentTimeMillis() - sinceMs;
+		String needle = matchValue != null ? matchValue.toLowerCase() : null;
+		// Kind/type fields match exactly - a substring check would make
+		// "spawned" also match "despawned".
+		boolean exact = matchField != null
+			&& (matchField.equals("kind") || matchField.equals("type")
+				|| matchField.equals("objectType"));
+		List<JsonObject> matched = new ArrayList<>();
+		for (JsonObject entry : buffer)
+		{
+			if (entry.get("timeMs").getAsLong() < cutoff)
+			{
+				continue;
+			}
+			if (needle != null)
+			{
+				JsonElement value = entry.get(matchField);
+				String field = value != null ? value.getAsString() : null;
+				if (field == null || (exact
+					? !field.equalsIgnoreCase(needle)
+					: !field.toLowerCase().contains(needle)))
+				{
+					continue;
+				}
+			}
+			matched.add(entry);
+		}
+		JsonArray arr = new JsonArray();
+		for (int i = Math.max(0, matched.size() - limit); i < matched.size(); i++)
+		{
+			arr.add(matched.get(i));
+		}
+		result.addProperty("total", matched.size());
+		result.addProperty("dropped", droppedFor(channel));
+		result.add("events", arr);
+		return result;
 	}
 
 	synchronized JsonObject spawnHistory(long sinceMs, String kind, String nameFilter, int limit)
@@ -873,7 +1073,7 @@ class McpEventRecorder
 	{
 		return List.of(scripts, vars, varcs, projectiles, effects, chat,
 			combat, experience, containers, sounds, spawns, loot, overheads,
-			interfaces, actions);
+			interfaces, actions, objects, gfx, interact, social, world);
 	}
 
 	private Map<String, Deque<JsonObject>> channelBuffers;
@@ -890,7 +1090,9 @@ class McpEventRecorder
 				Map.entry("container", containers), Map.entry("sound", sounds),
 				Map.entry("spawn", spawns), Map.entry("loot", loot),
 				Map.entry("overhead", overheads), Map.entry("interface", interfaces),
-				Map.entry("action", actions));
+				Map.entry("action", actions), Map.entry("object", objects),
+				Map.entry("gfx", gfx), Map.entry("interact", interact),
+				Map.entry("social", social), Map.entry("world", world));
 		}
 		return channelBuffers;
 	}

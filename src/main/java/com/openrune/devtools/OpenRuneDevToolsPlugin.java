@@ -43,20 +43,41 @@ import net.runelite.api.Hitsplat;
 import net.runelite.api.Item;
 import net.runelite.api.ItemComposition;
 import net.runelite.api.NPC;
+import net.runelite.api.ObjectComposition;
+import net.runelite.api.Player;
 import net.runelite.api.Tile;
 import net.runelite.api.TileItem;
+import net.runelite.api.TileObject;
 import net.runelite.api.Projectile;
 import net.runelite.api.ScriptEvent;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.events.ActorDeath;
+import net.runelite.api.events.AmbientSoundEffectCreated;
 import net.runelite.api.events.AnimationChanged;
 import net.runelite.api.events.AreaSoundEffectPlayed;
 import net.runelite.api.events.ChatMessage;
+import net.runelite.api.events.ClanChannelChanged;
+import net.runelite.api.events.ClanMemberJoined;
+import net.runelite.api.events.ClanMemberLeft;
+import net.runelite.api.events.CommandExecuted;
+import net.runelite.api.events.DecorativeObjectDespawned;
+import net.runelite.api.events.DecorativeObjectSpawned;
+import net.runelite.api.events.FakeXpDrop;
+import net.runelite.api.events.FriendsChatChanged;
+import net.runelite.api.events.FriendsChatMemberJoined;
+import net.runelite.api.events.FriendsChatMemberLeft;
+import net.runelite.api.events.GameObjectDespawned;
+import net.runelite.api.events.GameObjectSpawned;
 import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.GraphicChanged;
+import net.runelite.api.events.GraphicsObjectCreated;
+import net.runelite.api.events.GroundObjectDespawned;
+import net.runelite.api.events.GroundObjectSpawned;
 import net.runelite.api.events.HitsplatApplied;
+import net.runelite.api.events.InteractingChanged;
 import net.runelite.api.events.ItemContainerChanged;
 import net.runelite.api.events.ItemDespawned;
+import net.runelite.api.events.ItemQuantityChanged;
 import net.runelite.api.events.ItemSpawned;
 import net.runelite.api.events.MenuOptionClicked;
 import net.runelite.api.events.NpcChanged;
@@ -64,6 +85,8 @@ import net.runelite.api.events.NpcDespawned;
 import net.runelite.api.events.NpcSpawned;
 import net.runelite.api.events.OverheadTextChanged;
 import net.runelite.api.events.MenuOpened;
+import net.runelite.api.events.PlayerChanged;
+import net.runelite.api.events.PreMapLoad;
 import net.runelite.api.events.ProjectileMoved;
 import net.runelite.api.events.ScriptPreFired;
 import net.runelite.api.events.SoundEffectPlayed;
@@ -71,8 +94,11 @@ import net.runelite.api.events.StatChanged;
 import net.runelite.api.events.VarClientIntChanged;
 import net.runelite.api.events.VarClientStrChanged;
 import net.runelite.api.events.VarbitChanged;
+import net.runelite.api.events.WallObjectDespawned;
+import net.runelite.api.events.WallObjectSpawned;
 import net.runelite.api.events.WidgetClosed;
 import net.runelite.api.events.WidgetLoaded;
+import net.runelite.api.events.WorldChanged;
 import net.runelite.client.callback.ClientThread;
 import okhttp3.OkHttpClient;
 import net.runelite.client.config.ConfigManager;
@@ -153,6 +179,12 @@ public class OpenRuneDevToolsPlugin extends Plugin
 		if (itemIconTool != null && config.itemIconEditor())
 		{
 			itemIconTool.onMenuOpened(event);
+		}
+		if (recorder != null)
+		{
+			recorder.recordInterfaceMenu(
+				event.getMenuEntries() != null ? event.getMenuEntries().length : 0,
+				client.getTickCount());
 		}
 	}
 
@@ -472,6 +504,255 @@ public class OpenRuneDevToolsPlugin extends Plugin
 			recorder.recordAction(event.getMenuOption(), event.getMenuTarget(),
 				event.getMenuAction().name(), event.getParam0(), event.getParam1(),
 				event.getId(), event.getItemId(), client.getTickCount());
+		}
+	}
+
+	// --- scene object lifecycle: arena objects spawning/despawning mid-fight ---
+
+	@Subscribe
+	public void onGameObjectSpawned(GameObjectSpawned event)
+	{
+		recordObject("spawned", "game", event.getGameObject());
+	}
+
+	@Subscribe
+	public void onGameObjectDespawned(GameObjectDespawned event)
+	{
+		recordObject("despawned", "game", event.getGameObject());
+	}
+
+	@Subscribe
+	public void onWallObjectSpawned(WallObjectSpawned event)
+	{
+		recordObject("spawned", "wall", event.getWallObject());
+	}
+
+	@Subscribe
+	public void onWallObjectDespawned(WallObjectDespawned event)
+	{
+		recordObject("despawned", "wall", event.getWallObject());
+	}
+
+	@Subscribe
+	public void onDecorativeObjectSpawned(DecorativeObjectSpawned event)
+	{
+		recordObject("spawned", "decorative", event.getDecorativeObject());
+	}
+
+	@Subscribe
+	public void onDecorativeObjectDespawned(DecorativeObjectDespawned event)
+	{
+		recordObject("despawned", "decorative", event.getDecorativeObject());
+	}
+
+	@Subscribe
+	public void onGroundObjectSpawned(GroundObjectSpawned event)
+	{
+		recordObject("spawned", "ground", event.getGroundObject());
+	}
+
+	@Subscribe
+	public void onGroundObjectDespawned(GroundObjectDespawned event)
+	{
+		recordObject("despawned", "ground", event.getGroundObject());
+	}
+
+	private void recordObject(String kind, String type, TileObject obj)
+	{
+		if (recorder == null || obj == null)
+		{
+			return;
+		}
+		WorldPoint wp = obj.getWorldLocation();
+		ObjectComposition comp = client.getObjectDefinition(obj.getId());
+		recorder.recordObject(kind, type, obj.getId(), comp != null ? comp.getName() : null,
+			wp != null ? wp.getX() : null, wp != null ? wp.getY() : null,
+			wp != null ? wp.getPlane() : null, client.getTickCount());
+	}
+
+	@Subscribe
+	public void onGraphicsObjectCreated(GraphicsObjectCreated event)
+	{
+		if (recorder == null || event.getGraphicsObject() == null)
+		{
+			return;
+		}
+		net.runelite.api.GraphicsObject gfx = event.getGraphicsObject();
+		net.runelite.api.coords.LocalPoint lp = gfx.getLocation();
+		WorldPoint wp = lp != null ? WorldPoint.fromLocal(client, lp) : null;
+		recorder.recordGfx(gfx.getId(),
+			wp != null ? wp.getX() : null, wp != null ? wp.getY() : null,
+			gfx.getLevel(), client.getTickCount());
+	}
+
+	@Subscribe
+	public void onInteractingChanged(InteractingChanged event)
+	{
+		if (recorder == null)
+		{
+			return;
+		}
+		Actor source = event.getSource();
+		Actor target = event.getTarget();
+		if (source == null)
+		{
+			return;
+		}
+		NPC srcNpc = source instanceof NPC ? (NPC) source : null;
+		NPC tgtNpc = target instanceof NPC ? (NPC) target : null;
+		recorder.recordInteract(
+			srcNpc != null ? "npc" : "player", source.getName(),
+			srcNpc != null ? srcNpc.getIndex() : -1,
+			target != null ? (tgtNpc != null ? "npc" : "player") : null,
+			target != null ? target.getName() : null,
+			tgtNpc != null ? tgtNpc.getIndex() : -1,
+			client.getTickCount());
+	}
+
+	@Subscribe
+	public void onItemQuantityChanged(ItemQuantityChanged event)
+	{
+		if (recorder == null || event.getItem() == null)
+		{
+			return;
+		}
+		WorldPoint wp = event.getTile() != null ? event.getTile().getWorldLocation() : null;
+		ItemComposition comp = client.getItemDefinition(event.getItem().getId());
+		recorder.recordLoot("quantity", event.getItem().getId(),
+			comp != null ? comp.getName() : null, event.getNewQuantity(),
+			wp != null ? wp.getX() : null, wp != null ? wp.getY() : null,
+			client.getTickCount());
+	}
+
+	@Subscribe
+	public void onWorldChanged(WorldChanged event)
+	{
+		if (recorder != null)
+		{
+			recorder.recordWorld("world_changed", client.getWorld(), null, client.getTickCount());
+		}
+	}
+
+	@Subscribe
+	public void onPreMapLoad(PreMapLoad event)
+	{
+		if (recorder != null)
+		{
+			recorder.recordWorld("mapload", null,
+				client.isInInstancedRegion() ? "instanced" : null, client.getTickCount());
+		}
+	}
+
+	@Subscribe
+	public void onCommandExecuted(CommandExecuted event)
+	{
+		// ::commands the client actually sent — pairs with type_chat evidence.
+		if (recorder != null)
+		{
+			String[] args = event.getArguments();
+			recorder.recordAction("::" + event.getCommand(),
+				args != null && args.length > 0 ? String.join(" ", args) : null,
+				"COMMAND_EXECUTED", 0, 0, 0, -1, client.getTickCount());
+		}
+	}
+
+	@Subscribe
+	public void onFakeXpDrop(FakeXpDrop event)
+	{
+		if (recorder != null)
+		{
+			recorder.recordFakeXp(event.getSkill().name(), event.getXp(), client.getTickCount());
+		}
+	}
+
+	@Subscribe
+	public void onPlayerChanged(PlayerChanged event)
+	{
+		// Appearance/gear updates — proves a player render-state changed.
+		if (recorder == null || event.getPlayer() == null)
+		{
+			return;
+		}
+		Player p = event.getPlayer();
+		WorldPoint wp = p.getWorldLocation();
+		recorder.recordSpawn("changed", "player", p.getName(), -1, null, null,
+			wp != null ? wp.getX() : null, wp != null ? wp.getY() : null, client.getTickCount());
+	}
+
+	@Subscribe
+	public void onAmbientSoundEffectCreated(AmbientSoundEffectCreated event)
+	{
+		if (recorder != null && event.getAmbientSoundEffect() != null)
+		{
+			recorder.recordSound("ambient", event.getAmbientSoundEffect().getSoundEffectId(),
+				null, null, null, client.getTickCount());
+		}
+	}
+
+	// --- social: clan + friends chat membership events ---
+
+	@Subscribe
+	public void onClanChannelChanged(ClanChannelChanged event)
+	{
+		if (recorder == null)
+		{
+			return;
+		}
+		String name = event.getClanChannel() != null ? event.getClanChannel().getName() : null;
+		recorder.recordSocial(event.isGuest() ? "guest_clan" : "clan",
+			name != null ? name : "(left)", null, client.getTickCount());
+	}
+
+	@Subscribe
+	public void onClanMemberJoined(ClanMemberJoined event)
+	{
+		if (recorder != null && event.getClanMember() != null)
+		{
+			recorder.recordSocial("clan_member_joined", event.getClanMember().getName(),
+				event.getClanMember().getRank() != null
+					? String.valueOf(event.getClanMember().getRank().getRank()) : null,
+				client.getTickCount());
+		}
+	}
+
+	@Subscribe
+	public void onClanMemberLeft(ClanMemberLeft event)
+	{
+		if (recorder != null && event.getClanMember() != null)
+		{
+			recorder.recordSocial("clan_member_left", event.getClanMember().getName(),
+				null, client.getTickCount());
+		}
+	}
+
+	@Subscribe
+	public void onFriendsChatChanged(FriendsChatChanged event)
+	{
+		if (recorder != null)
+		{
+			net.runelite.api.FriendsChatManager fc = client.getFriendsChatManager();
+			recorder.recordSocial(event.isJoined() ? "fc_joined" : "fc_left",
+				fc != null ? fc.getName() : null, null, client.getTickCount());
+		}
+	}
+
+	@Subscribe
+	public void onFriendsChatMemberJoined(FriendsChatMemberJoined event)
+	{
+		if (recorder != null && event.getMember() != null)
+		{
+			recorder.recordSocial("fc_member_joined", event.getMember().getName(),
+				"world " + event.getMember().getWorld(), client.getTickCount());
+		}
+	}
+
+	@Subscribe
+	public void onFriendsChatMemberLeft(FriendsChatMemberLeft event)
+	{
+		if (recorder != null && event.getMember() != null)
+		{
+			recorder.recordSocial("fc_member_left", event.getMember().getName(),
+				null, client.getTickCount());
 		}
 	}
 

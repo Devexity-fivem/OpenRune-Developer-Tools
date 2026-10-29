@@ -230,6 +230,59 @@ class McpEventRecorderTest
 	}
 
 	@Test
+	void channelHistoryQueriesNewBuffers()
+	{
+		recorder.recordObject("spawned", "game", 1234, "Fire", 3200, 3201, 0, 10);
+		recorder.recordObject("despawned", "wall", 1551, "Door", 3201, 3202, 0, 11);
+		recorder.recordGfx(452, 3200, 3200, 0, 12);
+		recorder.recordInteract("npc", "Vorkath", 5, "player", "devin", -1, 13);
+		recorder.recordSocial("clan_member_joined", "alice", "3", 14);
+		recorder.recordWorld("world_changed", 302, null, 15);
+
+		assertEquals(2, recorder.channelHistory("object", 60_000, null, null, 100)
+			.get("total").getAsInt());
+		assertEquals(1, recorder.channelHistory("object", 60_000, "kind", "spawned", 100)
+			.get("total").getAsInt());
+		assertEquals(1, recorder.channelHistory("object", 60_000, "name", "fire", 100)
+			.get("total").getAsInt());
+		assertEquals(1, recorder.channelHistory("gfx", 60_000, "gfxId", "452", 100)
+			.get("total").getAsInt());
+		assertEquals(1, recorder.channelHistory("interact", 60_000, "target", "dev", 100)
+			.get("total").getAsInt());
+		assertEquals(1, recorder.channelHistory("social", 60_000, "kind", "clan_member_joined", 100)
+			.get("total").getAsInt());
+		assertEquals(1, recorder.channelHistory("world", 60_000, "worldId", "302", 100)
+			.get("total").getAsInt());
+		assertEquals(0, recorder.channelHistory("bogus", 60_000, null, null, 100)
+			.get("total").getAsInt());
+
+		recorder.reset();
+		assertEquals(0, recorder.channelHistory("object", 60_000, null, null, 100)
+			.get("total").getAsInt());
+	}
+
+	@Test
+	void recordFakeXpMarksFakeEvents()
+	{
+		recorder.recordFakeXp("ATTACK", 42, 10);
+		JsonObject history = recorder.experienceHistory(60_000, null, 100);
+		JsonObject event = history.getAsJsonArray("events").get(0).getAsJsonObject();
+		assertTrue(event.get("fake").getAsBoolean());
+		assertEquals(42, event.get("xpGained").getAsInt());
+	}
+
+	@Test
+	void firstEventSinceCoversNewChannels()
+	{
+		recorder.recordObject("spawned", "game", 1234, "Fire", 1, 2, 0, 1);
+		recorder.recordInteract("npc", "Boss", 3, "player", "me", -1, 2);
+		assertEquals(1234, recorder.firstEventSince("object", 0, e -> true)
+			.get("objectId").getAsInt());
+		assertEquals("Boss", recorder.firstEventSince("interact", 0,
+			e -> e.has("target")).get("source").getAsString());
+	}
+
+	@Test
 	void firstEventSinceReturnsNewestMatchAndRespectsCutoff()
 	{
 		recorder.recordChat("GAMEMESSAGE", null, null, "first", 1);

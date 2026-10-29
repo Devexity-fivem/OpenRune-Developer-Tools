@@ -934,9 +934,10 @@ class McpTools
 		// ---- definition inspectors ----
 
 		register("item_def",
-			"Item definition from the cache: name, note/placeholder links, stackable, members, tradeable, store price and inventory options - the ground truth for what an item id is.",
+			"Item definition from the cache: name, note/placeholder links, stackable, members, tradeable, store price and inventory options - the ground truth for what an item id is. Optional 'param' resolves one item param key.",
 			schema(props(
-				"id", "integer", "Item id"),
+				"id", "integer", "Item id",
+				"param", "integer", "Optional item param key to resolve (int/str/long value)"),
 				"id"),
 			args -> textResult(itemDef(args)));
 
@@ -1086,10 +1087,150 @@ class McpTools
 			schema(props("name", "string", "Marker id to remove")),
 			args -> clearMarks(args));
 
+		register("get_hint_arrow",
+			"Current hint arrow (server-set navigation marker): type + target tile/NPC/player. Servers send these for quests and mechanics.",
+			schema(props()),
+			args -> getHintArrow());
+
+		register("set_hint_arrow",
+			"Set a client-side hint arrow on a tile, NPC or player — navigation aid for humans watching the client (server can overwrite it).",
+			schema(props(
+				"x", "integer", "World x for a tile arrow",
+				"y", "integer", "World y for a tile arrow",
+				"npcIndex", "integer", "Arrow follows this NPC",
+				"playerName", "string", "Arrow follows this player")),
+			args -> setHintArrow(args));
+
+		register("clear_hint_arrow",
+			"Clear the current hint arrow.",
+			schema(props()),
+			args -> clearHintArrow());
+
+		register("examine",
+			"Send an Examine packet: npcIndex/npcName, objectId+x+y, ground item (itemId+x+y), or inventory itemId — the server responds with chat text; read it via wait_for chat_message or get_chat_history.",
+			schema(props(
+				"npcIndex", "integer", "NPC to examine",
+				"npcName", "string", "NPC name substring to examine",
+				"objectId", "integer", "Scene object id to examine (needs x/y)",
+				"itemId", "integer", "Item id: inventory item when x/y omitted, ground item at x,y when present",
+				"x", "integer", "World x for object/ground-item examine",
+				"y", "integer", "World y for object/ground-item examine")),
+			args -> examine(args));
+
+		register("get_clan",
+			"Clan channel info: own + guest channel name, member list (name, rank, world).",
+			schema(props()),
+			args -> getClan());
+
+		register("get_fc",
+			"Friends chat: owner, channel name, your rank, kick rank, member list (name, world, rank).",
+			schema(props()),
+			args -> getFriendsChat());
+
+		register("list_friends",
+			"Friends list: name + world for each friend.",
+			schema(props()),
+			args -> listFriends());
+
+		register("list_ignore",
+			"Ignore list: names (and previous names) of ignored players.",
+			schema(props()),
+			args -> listIgnore());
+
+		register("list_vars",
+			"Bulk var dump: varps (with serverValue) or varcs in an id range. For 'which vars did the server just send' — pair with get_var_history for per-change evidence.",
+			schema(props(
+				"type", "string", "varp (default), varcint or varcstr",
+				"start", "integer", "First id to include (default 0)",
+				"end", "integer", "Last id to include (default: whole varp array / populated varcs)",
+				"maxResults", "integer", "Cap rows returned (default 500)")),
+			args -> listVars(args));
+
+		register("enum_def",
+			"EnumComposition cache dump: enum id -> key/value rows (ints or strings). Useful for varbit-driven lookups (prayer lists, shop stock tables, skill data).",
+			schema(props(
+				"id", "integer", "Enum id",
+				"maxResults", "integer", "Cap rows (default 500)"),
+				"id"),
+			args -> enumDef(args));
+
+		register("struct_def",
+			"StructComposition cache dump: struct id -> param keys, optionally resolving values for given keys.",
+			schema(props(
+				"id", "integer", "Struct id",
+				"keys", "string", "Comma-separated param keys to resolve (default: first 20 found)"),
+				"id"),
+			args -> structDef(args));
+
+		register("anim_def",
+			"Animation definition: frame count, duration, per-frame lengths, forced hand items — verify an animation id does what the server intended.",
+			schema(props("id", "integer", "Animation id"), "id"),
+			args -> animDef(args));
+
+		register("list_gfx",
+			"Active unattached graphics objects (ground-targeted spotanims — AoE telegraphs without an actor): id, world tile, plane, finished.",
+			schema(props()),
+			args -> listGfx());
+
+		register("list_ge_offers",
+			"Grand Exchange offer slots: state, itemId, quantity, sold, price, spent. Empty on servers without GE.",
+			schema(props()),
+			args -> listGeOffers());
+
+		register("get_instance_map",
+			"Instanced region layout: isInInstancedRegion + the instance chunk template grid (source region coords + rotation per chunk) — for dungeon/instanced-area servers.",
+			schema(props()),
+			args -> getInstanceMap());
+
+		register("db_table",
+			"DBTable cache access: 'table' lists row ids, 'row' dumps a row's fields, 'table'+'column'+'value' queries rows by value. Server-driven config/data tables.",
+			schema(props(
+				"table", "integer", "DBTable id - list its rows (or query with column+value)",
+				"row", "integer", "Row id - dump its fields",
+				"column", "integer", "Column index for value queries",
+				"field", "integer", "Field index within a column (default 0)",
+				"value", "string", "Query rows whose column field equals this (int or string)",
+				"maxResults", "integer", "Cap rows (default 200)")),
+			args -> dbTable(args));
+
+		register("item_sprite",
+			"Render an item's inventory icon as a PNG image (content image block) - the same icon the client draws.",
+			schema(props(
+				"itemId", "integer", "Item id",
+				"quantity", "integer", "Stack quantity shown (default 1)",
+				"noted", "boolean", "Render the noted form"),
+				"itemId"),
+			args -> itemSprite(args));
+
+		register("get_music",
+			"Active MIDI requests: archive ids + jingle flag - which music tracks/jingles the server is currently playing.",
+			schema(props()),
+			args -> getMusic());
+
+		register("get_object_history",
+			"Scene object lifecycle events: spawned/despawned for game/wall/decorative/ground objects - boss arena objects, doors toggling, phase structures. Filter e.g. field=kind contains=spawned, or field=name contains=door.",
+			historySchema(), args -> channelHistoryTool("object", args));
+
+		register("get_gfx_history",
+			"Unattached graphics object spawns (ground spotanims - AoE telegraphs). Filter e.g. field=gfxId.",
+			historySchema(), args -> channelHistoryTool("gfx", args));
+
+		register("get_interact_history",
+			"Actor target changes: which actor targeted/cleared which target - tank swaps, retargets. Fields: source, target, sourceType, targetType.",
+			historySchema(), args -> channelHistoryTool("interact", args));
+
+		register("get_social_history",
+			"Clan channel + friends chat events: joins, leaves, member changes. Fields: kind, name, detail.",
+			historySchema(), args -> channelHistoryTool("social", args));
+
+		register("get_world_history",
+			"World/session events: world_changed, mapload (instanced region loads). Fields: kind, worldId.",
+			historySchema(), args -> channelHistoryTool("world", args));
+
 		register("wait_for",
 			"Block until a game condition is met, checked every 100ms - returns the moment it happens. Use this after walk_to/interact/attack instead of taking screenshots or guessing delays. Event-based conditions only see NEW events since the call started. Returns met:false with current state on timeout.",
 			schema(props(
-				"condition", "string", "What to wait for: idle, at_tile, npc_dead, dialogue, interface_open / interface_closed, chat_message, hitsplat, projectile, animation, spotanim, var, in_combat / out_of_combat, prayer, ticks, spawn / despawn / transform, loot, overhead, xp, container, action, world, stat, menu",
+				"condition", "string", "What to wait for: idle, at_tile, npc_dead, dialogue, interface_open / interface_closed, chat_message, hitsplat, projectile, animation, spotanim, var, in_combat / out_of_combat, prayer, ticks, spawn / despawn / transform, loot, overhead, xp, container, action, world, stat, menu, game_state, object_spawn / object_despawn, interacting, gfx, hintarrow",
 				"timeoutMs", "integer", "Give up after this long (default 10000, max 60000)",
 				"x", "integer", "at_tile: world x",
 				"y", "integer", "at_tile: world y",
@@ -1110,9 +1251,37 @@ class McpTools
 				"amount", "integer", "xp: xp gained to wait for (default 1)",
 				"containerId", "integer", "container: item container id (default 93 inventory)",
 				"itemId", "integer", "container: item id whose count change to wait for",
-				"filter", "string", "action: matches option/target/MenuAction type"),
+				"filter", "string", "action: matches option/target/MenuAction type",
+				"state", "string", "game_state: GameState name substring (default LOGGED_IN)",
+				"objectId", "integer", "object_spawn/despawn: object id to match",
+				"objectName", "string", "object_spawn/despawn: object name substring",
+				"gfxId", "integer", "gfx: graphics object id to match",
+				"source", "string", "interacting: source actor name substring",
+				"target", "string", "interacting: target actor name substring"),
 				"condition"),
 			this::waitFor);
+	}
+
+	/** Schema for the generic-channel history tools: sinceMs/limit + field/contains filter. */
+	private static JsonObject historySchema()
+	{
+		return schema(props(
+			"sinceMs", "integer", "Window in ms (default 60000)",
+			"field", "string", "Entry field to filter on (default: return all)",
+			"contains", "string", "Case-insensitive substring the field must contain",
+			"limit", "integer", "Max events (default 100)"));
+	}
+
+	private JsonObject channelHistoryTool(String channel, JsonObject args)
+	{
+		// Filtering requires both halves; a lone "contains" is ignored.
+		String field = args.has("field") && args.has("contains")
+			? args.get("field").getAsString() : null;
+		return textResult(recorder.channelHistory(channel,
+			optInt(args, "sinceMs", 60_000),
+			field,
+			field != null ? args.get("contains").getAsString() : null,
+			optInt(args, "limit", 100)));
 	}
 
 	/** Build a JSON Schema properties object from (name, type, description) triples. */
@@ -4586,6 +4755,23 @@ class McpTools
 				}
 			}
 			o.add("inventoryActions", ops);
+			if (args.has("param"))
+			{
+				int key = args.get("param").getAsInt();
+				JsonObject param = new JsonObject();
+				param.addProperty("key", key);
+				param.addProperty("intValue", comp.getIntValue(key));
+				if (comp.getStringValue(key) != null)
+				{
+					param.addProperty("stringValue", comp.getStringValue(key));
+				}
+				long longVal = comp.getLongValue(key);
+				if (longVal != 0)
+				{
+					param.addProperty("longValue", longVal);
+				}
+				o.add("param", param);
+			}
 			return o;
 		});
 	}
@@ -5323,6 +5509,17 @@ class McpTools
 			int flag = flags[lp.getSceneX()][lp.getSceneY()];
 			result.addProperty("collisionFlags", flag);
 			result.addProperty("walkable", (flag & CollisionDataFlag.BLOCK_MOVEMENT_FULL) == 0);
+			int[][][] heights = client.getTileHeights();
+			if (heights != null && plane < heights.length)
+			{
+				int[][] planeHeights = heights[plane];
+				if (planeHeights != null && lp.getSceneX() < planeHeights.length
+					&& planeHeights[lp.getSceneX()] != null
+					&& lp.getSceneY() < planeHeights[lp.getSceneX()].length)
+				{
+					result.addProperty("tileHeight", planeHeights[lp.getSceneX()][lp.getSceneY()]);
+				}
+			}
 			if (tile == null)
 			{
 				return result;
@@ -5526,6 +5723,793 @@ class McpTools
 		JsonObject result = new JsonObject();
 		result.addProperty("cleared", cleared);
 		return textResult(result);
+	}
+
+	private JsonObject getHintArrow() throws Exception
+	{
+		return onClientThread(() ->
+		{
+			JsonObject result = new JsonObject();
+			result.addProperty("hasHintArrow", client.hasHintArrow());
+			if (!client.hasHintArrow())
+			{
+				return result;
+			}
+			result.addProperty("type", client.getHintArrowType());
+			WorldPoint p = client.getHintArrowPoint();
+			if (p != null)
+			{
+				result.addProperty("worldX", p.getX());
+				result.addProperty("worldY", p.getY());
+				result.addProperty("plane", p.getPlane());
+			}
+			NPC npc = client.getHintArrowNpc();
+			if (npc != null)
+			{
+				result.addProperty("npcIndex", npc.getIndex());
+				result.addProperty("npcId", npc.getId());
+				result.addProperty("npcName", npc.getName());
+			}
+			Player player = client.getHintArrowPlayer();
+			if (player != null)
+			{
+				result.addProperty("playerName", player.getName());
+			}
+			return result;
+		});
+	}
+
+	private JsonObject setHintArrow(JsonObject args) throws Exception
+	{
+		return onClientThread(() ->
+		{
+			if (args.has("npcIndex"))
+			{
+				int index = args.get("npcIndex").getAsInt();
+				for (NPC npc : client.getNpcs())
+				{
+					if (npc != null && npc.getIndex() == index)
+					{
+						client.setHintArrow(npc);
+						JsonObject o = new JsonObject();
+						o.addProperty("arrow", "npc");
+						o.addProperty("npcIndex", index);
+						return o;
+					}
+				}
+				throw new IllegalArgumentException("No NPC with index " + index);
+			}
+			if (args.has("playerName"))
+			{
+				String name = args.get("playerName").getAsString().toLowerCase();
+				for (Player p : client.getPlayers())
+				{
+					if (p != null && p.getName() != null
+						&& p.getName().toLowerCase().contains(name))
+					{
+						client.setHintArrow(p);
+						JsonObject o = new JsonObject();
+						o.addProperty("arrow", "player");
+						o.addProperty("playerName", p.getName());
+						return o;
+					}
+				}
+				throw new IllegalArgumentException("No player matching '" + name + "'");
+			}
+			if (args.has("x") && args.has("y"))
+			{
+				WorldPoint wp = new WorldPoint(args.get("x").getAsInt(), args.get("y").getAsInt(),
+					args.has("plane") ? args.get("plane").getAsInt() : client.getPlane());
+				client.setHintArrow(wp);
+				JsonObject o = new JsonObject();
+				o.addProperty("arrow", "tile");
+				o.addProperty("worldX", wp.getX());
+				o.addProperty("worldY", wp.getY());
+				o.addProperty("plane", wp.getPlane());
+				return o;
+			}
+			throw new IllegalArgumentException("Provide x+y, npcIndex or playerName");
+		});
+	}
+
+	private JsonObject clearHintArrow() throws Exception
+	{
+		return onClientThread(() ->
+		{
+			client.clearHintArrow();
+			JsonObject result = new JsonObject();
+			result.addProperty("cleared", true);
+			return result;
+		});
+	}
+
+	private JsonObject examine(JsonObject args) throws Exception
+	{
+		return onClientThread(() ->
+		{
+			JsonObject result = new JsonObject();
+			if (args.has("npcIndex") || args.has("npcName"))
+			{
+				NPC npc = findNpc(args);
+				if (npc == null)
+				{
+					throw new IllegalArgumentException("NPC not found");
+				}
+				client.menuAction(0, 0, MenuAction.EXAMINE_NPC, npc.getIndex(), -1,
+					"Examine", npc.getName() != null ? npc.getName() : "");
+				result.addProperty("examined", "npc");
+				result.addProperty("npcIndex", npc.getIndex());
+				result.addProperty("npcId", npc.getId());
+				result.addProperty("note", "Examine text arrives as a chat message - wait_for chat_message or get_chat_history");
+				return result;
+			}
+			if (args.has("objectId") && args.has("x") && args.has("y"))
+			{
+				int objectId = args.get("objectId").getAsInt();
+				int x = args.get("x").getAsInt();
+				int y = args.get("y").getAsInt();
+				LocalPoint lp = LocalPoint.fromWorld(client, new WorldPoint(x, y, client.getPlane()));
+				if (lp == null)
+				{
+					throw new IllegalArgumentException("Tile " + x + "," + y + " is not in the loaded scene");
+				}
+				client.menuAction(lp.getSceneX(), lp.getSceneY(), MenuAction.EXAMINE_OBJECT,
+					objectId, -1, "Examine", "");
+				result.addProperty("examined", "object");
+				result.addProperty("objectId", objectId);
+				result.addProperty("tile", x + "," + y);
+				return result;
+			}
+			if (args.has("itemId") && args.has("x") && args.has("y"))
+			{
+				int itemId = args.get("itemId").getAsInt();
+				int x = args.get("x").getAsInt();
+				int y = args.get("y").getAsInt();
+				LocalPoint lp = LocalPoint.fromWorld(client, new WorldPoint(x, y, client.getPlane()));
+				if (lp == null)
+				{
+					throw new IllegalArgumentException("Tile " + x + "," + y + " is not in the loaded scene");
+				}
+				client.menuAction(lp.getSceneX(), lp.getSceneY(), MenuAction.EXAMINE_ITEM_GROUND,
+					itemId, -1, "Examine", "");
+				result.addProperty("examined", "groundItem");
+				result.addProperty("itemId", itemId);
+				result.addProperty("tile", x + "," + y);
+				return result;
+			}
+			if (args.has("itemId"))
+			{
+				int itemId = args.get("itemId").getAsInt();
+				ItemContainer inv = client.getItemContainer(InventoryID.INV);
+				if (inv == null)
+				{
+					throw new IllegalStateException("Inventory unavailable");
+				}
+				Item[] items = inv.getItems();
+				for (int slot = 0; slot < items.length; slot++)
+				{
+					if (items[slot] != null && items[slot].getId() == itemId)
+					{
+						client.menuAction(slot, InterfaceID.Inventory.ITEMS,
+							MenuAction.EXAMINE_ITEM, itemId, -1, "Examine", "");
+						result.addProperty("examined", "inventoryItem");
+						result.addProperty("itemId", itemId);
+						result.addProperty("slot", slot);
+						return result;
+					}
+				}
+				throw new IllegalArgumentException("Item " + itemId + " not in inventory");
+			}
+			throw new IllegalArgumentException("Provide npcIndex/npcName, objectId+x+y, or itemId (+x+y for ground items)");
+		});
+	}
+
+	private JsonObject getClan() throws Exception
+	{
+		return onClientThread(() ->
+		{
+			JsonObject result = new JsonObject();
+			addClanSection(result, "clan", client.getClanChannel());
+			addClanSection(result, "guestClan", client.getGuestClanChannel());
+			return result;
+		});
+	}
+
+	private void addClanSection(JsonObject result, String key, net.runelite.api.clan.ClanChannel channel)
+	{
+		if (channel == null)
+		{
+			result.add(key, JsonNull.INSTANCE);
+			return;
+		}
+		JsonObject o = new JsonObject();
+		o.addProperty("name", channel.getName());
+		JsonArray members = new JsonArray();
+		for (net.runelite.api.clan.ClanChannelMember m : channel.getMembers())
+		{
+			JsonObject row = new JsonObject();
+			row.addProperty("name", m.getName());
+			if (m.getRank() != null)
+			{
+				row.addProperty("rank", m.getRank().getRank());
+			}
+			row.addProperty("world", m.getWorld());
+			members.add(row);
+		}
+		o.addProperty("memberCount", members.size());
+		o.add("members", members);
+		result.add(key, o);
+	}
+
+	private JsonObject getFriendsChat() throws Exception
+	{
+		return onClientThread(() ->
+		{
+			JsonObject result = new JsonObject();
+			net.runelite.api.FriendsChatManager fc = client.getFriendsChatManager();
+			result.addProperty("joined", fc != null);
+			if (fc == null)
+			{
+				return result;
+			}
+			result.addProperty("owner", fc.getOwner());
+			result.addProperty("name", fc.getName());
+			if (fc.getMyRank() != null)
+			{
+				result.addProperty("myRank", String.valueOf(fc.getMyRank()));
+			}
+			if (fc.getKickRank() != null)
+			{
+				result.addProperty("kickRank", String.valueOf(fc.getKickRank()));
+			}
+			JsonArray members = new JsonArray();
+			for (net.runelite.api.FriendsChatMember m : fc.getMembers())
+			{
+				if (m == null)
+				{
+					continue;
+				}
+				JsonObject row = new JsonObject();
+				row.addProperty("name", m.getName());
+				row.addProperty("world", m.getWorld());
+				if (m.getRank() != null)
+				{
+					row.addProperty("rank", String.valueOf(m.getRank()));
+				}
+				members.add(row);
+			}
+			result.addProperty("memberCount", members.size());
+			result.add("members", members);
+			return result;
+		});
+	}
+
+	private JsonObject listFriends() throws Exception
+	{
+		return onClientThread(() ->
+		{
+			JsonObject result = new JsonObject();
+			net.runelite.api.FriendContainer friends = client.getFriendContainer();
+			result.addProperty("count", friends != null ? friends.getCount() : 0);
+			JsonArray arr = new JsonArray();
+			if (friends != null)
+			{
+				for (net.runelite.api.Friend f : friends.getMembers())
+				{
+					if (f == null)
+					{
+						continue;
+					}
+					JsonObject o = new JsonObject();
+					o.addProperty("name", f.getName());
+					o.addProperty("world", f.getWorld());
+					arr.add(o);
+				}
+			}
+			result.add("friends", arr);
+			return result;
+		});
+	}
+
+	private JsonObject listIgnore() throws Exception
+	{
+		return onClientThread(() ->
+		{
+			JsonObject result = new JsonObject();
+			net.runelite.api.NameableContainer<net.runelite.api.Ignore> ignores = client.getIgnoreContainer();
+			result.addProperty("count", ignores != null ? ignores.getCount() : 0);
+			JsonArray arr = new JsonArray();
+			if (ignores != null)
+			{
+				for (net.runelite.api.Ignore i : ignores.getMembers())
+				{
+					if (i == null)
+					{
+						continue;
+					}
+					JsonObject o = new JsonObject();
+					o.addProperty("name", i.getName());
+					if (i.getPrevName() != null)
+					{
+						o.addProperty("prevName", i.getPrevName());
+					}
+					arr.add(o);
+				}
+			}
+			result.add("ignored", arr);
+			return result;
+		});
+	}
+
+	private JsonObject listVars(JsonObject args) throws Exception
+	{
+		String type = args.has("type") ? args.get("type").getAsString() : "varp";
+		int max = optInt(args, "maxResults", 500);
+		return onClientThread(() ->
+		{
+			JsonObject result = new JsonObject();
+			result.addProperty("type", type);
+			JsonArray arr = new JsonArray();
+			int count = 0;
+			if ("varp".equals(type))
+			{
+				int[] varps = client.getVarps();
+				int[] server = client.getServerVarps();
+				int start = args.has("start") ? args.get("start").getAsInt() : 0;
+				int end = args.has("end") ? args.get("end").getAsInt() : varps.length - 1;
+				result.addProperty("totalVarps", varps.length);
+				for (int i = Math.max(0, start); i <= Math.min(end, varps.length - 1) && count < max; i++)
+				{
+					JsonObject o = new JsonObject();
+					o.addProperty("id", i);
+					o.addProperty("value", varps[i]);
+					if (server != null && i < server.length && server[i] != varps[i])
+					{
+						o.addProperty("serverValue", server[i]);
+					}
+					arr.add(o);
+					count++;
+				}
+			}
+			else
+			{
+				Map<Integer, Object> map = client.getVarcMap();
+				if (map != null)
+				{
+					int start = args.has("start") ? args.get("start").getAsInt() : 0;
+					int end = args.has("end") ? args.get("end").getAsInt() : Integer.MAX_VALUE;
+					for (Map.Entry<Integer, Object> e : map.entrySet())
+					{
+						int id = e.getKey();
+						if (id < start || id > end || count >= max)
+						{
+							continue;
+						}
+						boolean isStr = "varcstr".equals(type);
+						if (e.getValue() instanceof String != isStr)
+						{
+							continue;
+						}
+						JsonObject o = new JsonObject();
+						o.addProperty("id", id);
+						if (e.getValue() instanceof String)
+						{
+							o.addProperty("value", (String) e.getValue());
+						}
+						else if (e.getValue() instanceof Number)
+						{
+							o.addProperty("value", ((Number) e.getValue()).intValue());
+						}
+						else
+						{
+							o.addProperty("value", String.valueOf(e.getValue()));
+						}
+						arr.add(o);
+						count++;
+					}
+				}
+				result.addProperty("populated", map != null ? map.size() : 0);
+			}
+			result.addProperty("count", count);
+			result.add("vars", arr);
+			return result;
+		});
+	}
+
+	private JsonObject enumDef(JsonObject args) throws Exception
+	{
+		int id = args.get("id").getAsInt();
+		int max = optInt(args, "maxResults", 500);
+		return onClientThread(() ->
+		{
+			net.runelite.api.EnumComposition e = client.getEnum(id);
+			if (e == null)
+			{
+				throw new IllegalArgumentException("Enum " + id + " not found");
+			}
+			JsonObject result = new JsonObject();
+			result.addProperty("id", id);
+			result.addProperty("size", e.size());
+			JsonArray rows = new JsonArray();
+			int[] keys = e.getKeys();
+			int[] intVals = e.getIntVals();
+			String[] strVals = e.getStringVals();
+			for (int i = 0; keys != null && i < keys.length && i < max; i++)
+			{
+				JsonObject row = new JsonObject();
+				row.addProperty("key", keys[i]);
+				if (strVals != null && strVals.length > i && strVals[i] != null)
+				{
+					row.addProperty("stringValue", strVals[i]);
+				}
+				else if (intVals != null && intVals.length > i)
+				{
+					row.addProperty("intValue", intVals[i]);
+				}
+				rows.add(row);
+			}
+			result.add("entries", rows);
+			return result;
+		});
+	}
+
+	private JsonObject structDef(JsonObject args) throws Exception
+	{
+		int id = args.get("id").getAsInt();
+		return onClientThread(() ->
+		{
+			net.runelite.api.StructComposition s = client.getStructComposition(id);
+			if (s == null)
+			{
+				throw new IllegalArgumentException("Struct " + id + " not found");
+			}
+			JsonObject result = new JsonObject();
+			result.addProperty("id", id);
+			List<Integer> keys = new ArrayList<>();
+			if (args.has("keys"))
+			{
+				for (String k : args.get("keys").getAsString().split(","))
+				{
+					keys.add(Integer.parseInt(k.trim()));
+				}
+			}
+			else if (s.getParams() != null)
+			{
+				for (net.runelite.api.Node node : s.getParams())
+				{
+					if (keys.size() >= 20)
+					{
+						break;
+					}
+					keys.add((int) node.getHash());
+				}
+			}
+			JsonArray rows = new JsonArray();
+			for (int key : keys)
+			{
+				JsonObject row = new JsonObject();
+				row.addProperty("key", key);
+				String strVal = s.getStringValue(key);
+				if (strVal != null)
+				{
+					row.addProperty("stringValue", strVal);
+				}
+				row.addProperty("intValue", s.getIntValue(key));
+				long longVal = s.getLongValue(key);
+				if (longVal != 0)
+				{
+					row.addProperty("longValue", longVal);
+				}
+				rows.add(row);
+			}
+			result.add("params", rows);
+			return result;
+		});
+	}
+
+	private JsonObject animDef(JsonObject args) throws Exception
+	{
+		int id = args.get("id").getAsInt();
+		return onClientThread(() ->
+		{
+			net.runelite.api.Animation anim = client.loadAnimation(id);
+			if (anim == null)
+			{
+				throw new IllegalArgumentException("Animation " + id + " not found");
+			}
+			JsonObject result = new JsonObject();
+			result.addProperty("id", anim.getId());
+			result.addProperty("numFrames", anim.getNumFrames());
+			result.addProperty("duration", anim.getDuration());
+			result.addProperty("frameStep", anim.getFrameStep());
+			result.addProperty("mayaAnim", anim.isMayaAnim());
+			int[] lengths = anim.getFrameLengths();
+			if (lengths != null && lengths.length > 0)
+			{
+				JsonArray arr = new JsonArray();
+				for (int len : lengths)
+				{
+					arr.add(len);
+				}
+				result.add("frameLengths", arr);
+			}
+			if (anim.getLeftHandItem() > 0)
+			{
+				result.addProperty("leftHandItem", anim.getLeftHandItem());
+			}
+			if (anim.getRightHandItem() > 0)
+			{
+				result.addProperty("rightHandItem", anim.getRightHandItem());
+			}
+			return result;
+		});
+	}
+
+	private JsonObject listGfx() throws Exception
+	{
+		return onClientThread(() ->
+		{
+			JsonObject result = new JsonObject();
+			JsonArray arr = new JsonArray();
+			net.runelite.api.Deque<net.runelite.api.GraphicsObject> objects = client.getGraphicsObjects();
+			if (objects != null)
+			{
+				for (net.runelite.api.GraphicsObject gfx : objects)
+				{
+					if (gfx == null)
+					{
+						continue;
+					}
+					JsonObject o = new JsonObject();
+					o.addProperty("gfxId", gfx.getId());
+					net.runelite.api.coords.LocalPoint lp = gfx.getLocation();
+					if (lp != null)
+					{
+						WorldPoint wp = WorldPoint.fromLocal(client, lp);
+						if (wp != null)
+						{
+							o.addProperty("worldX", wp.getX());
+							o.addProperty("worldY", wp.getY());
+							o.addProperty("plane", wp.getPlane());
+						}
+					}
+					o.addProperty("level", gfx.getLevel());
+					o.addProperty("finished", gfx.finished());
+					arr.add(o);
+				}
+			}
+			result.addProperty("count", arr.size());
+			result.add("graphics", arr);
+			return result;
+		});
+	}
+
+	private JsonObject listGeOffers() throws Exception
+	{
+		return onClientThread(() ->
+		{
+			JsonObject result = new JsonObject();
+			JsonArray arr = new JsonArray();
+			net.runelite.api.GrandExchangeOffer[] offers = client.getGrandExchangeOffers();
+			if (offers != null)
+			{
+				for (int slot = 0; slot < offers.length; slot++)
+				{
+					net.runelite.api.GrandExchangeOffer offer = offers[slot];
+					if (offer == null)
+					{
+						continue;
+					}
+					JsonObject o = new JsonObject();
+					o.addProperty("slot", slot);
+					o.addProperty("state", offer.getState() != null ? offer.getState().name() : null);
+					if (offer.getItemId() > 0)
+					{
+						o.addProperty("itemId", offer.getItemId());
+						o.addProperty("quantity", offer.getTotalQuantity());
+						o.addProperty("sold", offer.getQuantitySold());
+						o.addProperty("price", offer.getPrice());
+						o.addProperty("spent", offer.getSpent());
+					}
+					arr.add(o);
+				}
+			}
+			result.add("offers", arr);
+			return result;
+		});
+	}
+
+	private JsonObject getInstanceMap() throws Exception
+	{
+		return onClientThread(() ->
+		{
+			JsonObject result = new JsonObject();
+			boolean instanced = client.isInInstancedRegion();
+			result.addProperty("instanced", instanced);
+			if (!instanced)
+			{
+				return result;
+			}
+			int[][][] chunks = client.getInstanceTemplateChunks();
+			result.addProperty("planes", chunks != null ? chunks.length : 0);
+			if (chunks != null)
+			{
+				JsonArray arr = new JsonArray();
+				for (int z = 0; z < chunks.length; z++)
+				{
+					for (int x = 0; chunks[z] != null && x < chunks[z].length; x++)
+					{
+						for (int y = 0; chunks[z][x] != null && y < chunks[z][x].length; y++)
+						{
+							int packed = chunks[z][x][y];
+							if (packed == 0)
+							{
+								continue;
+							}
+							JsonObject o = new JsonObject();
+							o.addProperty("plane", z);
+							o.addProperty("chunkX", x);
+							o.addProperty("chunkY", y);
+							o.addProperty("packed", packed);
+							// Standard OSRS instance-chunk packing.
+							o.addProperty("sourceRegionX", (packed >> 14) & 0x3FF);
+							o.addProperty("sourceRegionY", (packed >> 3) & 0x7FF);
+							o.addProperty("sourcePlane", (packed >> 24) & 0x3);
+							o.addProperty("rotation", (packed >> 1) & 0x3);
+							arr.add(o);
+						}
+					}
+				}
+				result.add("chunks", arr);
+			}
+			return result;
+		});
+	}
+
+	private JsonObject dbTable(JsonObject args) throws Exception
+	{
+		return onClientThread(() ->
+		{
+			JsonObject result = new JsonObject();
+			if (args.has("row"))
+			{
+				int row = args.get("row").getAsInt();
+				result.addProperty("row", row);
+				net.runelite.api.dbtable.DBRowConfig cfg = client.getDBRowConfig(row);
+				if (cfg != null)
+				{
+					result.addProperty("tableId", cfg.getTableID());
+				}
+				JsonArray rows = new JsonArray();
+				for (int col = 0; col < 16; col++)
+				{
+					for (int field = 0; field < 8; field++)
+					{
+						Object[] values = client.getDBTableField(row, col, field);
+						if (values == null || values.length == 0)
+						{
+							continue;
+						}
+						for (int i = 0; i < values.length; i++)
+						{
+							JsonObject o = new JsonObject();
+							o.addProperty("column", col);
+							o.addProperty("field", field);
+							o.addProperty("index", i);
+							Object v = values[i];
+							if (v instanceof Number)
+							{
+								o.addProperty("value", ((Number) v).longValue());
+							}
+							else
+							{
+								o.addProperty("value", String.valueOf(v));
+							}
+							rows.add(o);
+						}
+					}
+				}
+				result.add("fields", rows);
+				return result;
+			}
+			if (!args.has("table"))
+			{
+				throw new IllegalArgumentException("Provide table, row, or table+column+value");
+			}
+			int table = args.get("table").getAsInt();
+			result.addProperty("table", table);
+			JsonArray arr = new JsonArray();
+			if (args.has("column") && args.has("value"))
+			{
+				int column = args.get("column").getAsInt();
+				int field = optInt(args, "field", 0);
+				String raw = args.get("value").getAsString();
+				Object value;
+				try
+				{
+					value = Integer.parseInt(raw);
+				}
+				catch (NumberFormatException nfe)
+				{
+					value = raw;
+				}
+				for (Integer rowId : client.getDBRowsByValue(table, column, field, value))
+				{
+					arr.add(rowId);
+				}
+				result.addProperty("query", "column=" + column + " field=" + field + " value=" + value);
+			}
+			else
+			{
+				int max = optInt(args, "maxResults", 200);
+				List<Integer> rows = client.getDBTableRows(table);
+				int count = 0;
+				if (rows != null)
+				{
+					for (Integer rowId : rows)
+					{
+						if (count++ >= max)
+						{
+							break;
+						}
+						arr.add(rowId);
+					}
+				}
+				result.addProperty("totalRows", rows != null ? rows.size() : 0);
+			}
+			result.add("rows", arr);
+			return result;
+		});
+	}
+
+	private JsonObject itemSprite(JsonObject args) throws Exception
+	{
+		int itemId = args.get("itemId").getAsInt();
+		int quantity = optInt(args, "quantity", 1);
+		boolean noted = args.has("noted") && args.get("noted").getAsBoolean();
+		BufferedImage image = onClientThread(() ->
+		{
+			net.runelite.api.SpritePixels sprite = client.createItemSprite(itemId, quantity,
+				1, 0x333333, 0, noted, 1);
+			return sprite != null ? sprite.toBufferedImage() : null;
+		});
+		if (image == null)
+		{
+			throw new IllegalArgumentException("No sprite for item " + itemId);
+		}
+		JsonObject imageContent = new JsonObject();
+		imageContent.addProperty("type", "image");
+		imageContent.addProperty("data", pngBase64(image));
+		imageContent.addProperty("mimeType", "image/png");
+		JsonArray content = new JsonArray();
+		content.add(imageContent);
+		JsonObject result = new JsonObject();
+		result.add("content", content);
+		return result;
+	}
+
+	private JsonObject getMusic() throws Exception
+	{
+		return onClientThread(() ->
+		{
+			JsonObject result = new JsonObject();
+			JsonArray arr = new JsonArray();
+			List<net.runelite.api.MidiRequest> requests = client.getActiveMidiRequests();
+			if (requests != null)
+			{
+				for (net.runelite.api.MidiRequest r : requests)
+				{
+					JsonObject o = new JsonObject();
+					o.addProperty("archiveId", r.getArchiveId());
+					o.addProperty("jingle", r.isJingle());
+					arr.add(o);
+				}
+			}
+			result.addProperty("count", arr.size());
+			result.add("tracks", arr);
+			result.addProperty("musicVolume", client.getMusicVolume());
+			return result;
+		});
 	}
 
 	private JsonObject waitFor(JsonObject args) throws Exception
@@ -5759,6 +6743,66 @@ class McpTools
 				boolean open = client.isMenuOpen();
 				met = open;
 				o.addProperty("open", open);
+				break;
+			}
+			case "game_state":
+			{
+				String wanted = args.has("state") ? args.get("state").getAsString().toUpperCase() : "LOGGED_IN";
+				String current = client.getGameState().name();
+				met = current.contains(wanted);
+				o.addProperty("gameState", current);
+				break;
+			}
+			case "object_spawn":
+			case "object_despawn":
+			{
+				String kind = "object_spawn".equals(condition) ? "spawned" : "despawned";
+				Integer objectId = args.has("objectId") ? args.get("objectId").getAsInt() : null;
+				String nameFilter = args.has("objectName") ? args.get("objectName").getAsString().toLowerCase() : null;
+				JsonObject hit = recorder.firstEventSince("object", startMs, e ->
+					kind.equals(e.get("kind").getAsString())
+						&& (objectId == null || e.get("objectId").getAsInt() == objectId)
+						&& (nameFilter == null || (e.has("name")
+							&& e.get("name").getAsString().toLowerCase().contains(nameFilter))));
+				met = hit != null;
+				if (hit != null)
+				{
+					o.add("event", hit);
+				}
+				break;
+			}
+			case "interacting":
+			{
+				String source = args.has("source") ? args.get("source").getAsString().toLowerCase() : null;
+				String target = args.has("target") ? args.get("target").getAsString().toLowerCase() : null;
+				JsonObject hit = recorder.firstEventSince("interact", startMs, e ->
+					(source == null || (e.has("source")
+						&& e.get("source").getAsString().toLowerCase().contains(source)))
+						&& (target == null || (e.has("target")
+							&& e.get("target").getAsString().toLowerCase().contains(target))));
+				met = hit != null;
+				if (hit != null)
+				{
+					o.add("event", hit);
+				}
+				break;
+			}
+			case "gfx":
+			{
+				Integer gfxId = args.has("gfxId") ? args.get("gfxId").getAsInt() : null;
+				JsonObject hit = recorder.firstEventSince("gfx", startMs, e ->
+					gfxId == null || e.get("gfxId").getAsInt() == gfxId);
+				met = hit != null;
+				if (hit != null)
+				{
+					o.add("event", hit);
+				}
+				break;
+			}
+			case "hintarrow":
+			{
+				met = client.hasHintArrow();
+				o.addProperty("hasHintArrow", met);
 				break;
 			}
 			case "in_combat":

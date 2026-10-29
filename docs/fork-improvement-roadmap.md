@@ -295,12 +295,58 @@ and player ops are dynamic (Follow/Trade/attackable Attack/server-added), so
 option→opIndex mapping is guesswork; hover-based `interact_player` remains
 correct.
 
+## 5e. Fifth batch (120 tools) — deep API coverage
+
+**New recorder channels** (all bounded, merged into `get_timeline` on request,
+cleared by `reset()`, queryable via the generic `channelHistory` + the
+early-exit `firstEventSince`):
+
+- `object` — scene object lifecycle (GameObject/WallObject/DecorativeObject/
+  GroundObject spawned+despawned). Arena objects, doors, phase structures.
+- `gfx` — `GraphicsObjectCreated`: unattached spotanims (ground-targeted AoE
+  telegraphs with no actor).
+- `interact` — `InteractingChanged`: actor target acquire/clear (tank swaps,
+  retargets).
+- `social` — clan channel join/leave + member join/leave, friends-chat
+  join/leave + member join/leave.
+- `world` — `WorldChanged` and `PreMapLoad` (instanced region loads).
+- `experience` gained `fake:true` entries via `FakeXpDrop` — private servers
+  use fake xp drops as damage counters.
+- `loot` gained `quantity` kind via `ItemQuantityChanged`; `sound` gained
+  `ambient` kind; `interface` gained `menu_opened` kind (right-click count);
+  `action` gains `COMMAND_EXECUTED` entries via `CommandExecuted`; `spawn`
+  gains `changed` kind via `PlayerChanged` (appearance/gear updates).
+
+**New tools (23)**: `get_hint_arrow`/`set_hint_arrow`/`clear_hint_arrow`
+(server-set + client-side navigation markers), `examine` (NPC/object/ground-
+item/inventory Examine packets → chat evidence), `get_clan`, `get_fc`,
+`list_friends`, `list_ignore`, `list_vars` (bulk varp dump with `serverValue`
++ varc map), `enum_def`, `struct_def`, `anim_def`, `list_gfx` (live unattached
+graphics), `list_ge_offers`, `get_instance_map` (instanced chunk templates,
+packed-int decode), `db_table` (list rows / dump row fields / query by
+column value), `item_sprite` (item icon PNG via `createItemSprite`),
+`get_music` (active MIDI requests), `get_object_history`,
+`get_gfx_history`, `get_interact_history`, `get_social_history`,
+`get_world_history`.
+
+**Enhancements**: `get_tile` + `tileHeight` (scene tile heights);
+`item_def` + optional `param` key resolution (ItemComposition params);
+`wait_for` + `game_state`, `object_spawn`/`object_despawn`, `interacting`,
+`gfx`, `hintarrow` conditions; generic `field`/`contains` history filter with
+exact-match for `kind`/`type`/`objectType` fields (prevents
+`contains=spawned` also matching `despawned` — caught by tests).
+
+**Semantics note**: `channelHistory` treats `kind`, `type` and `objectType`
+as exact-match fields; all others are substring-contains.
+
 ## 6. Test matrix
 
-`./gradlew build` → **35 tests, all green** (JDK 21 toolchain, Java 11 target).
-The tool-list test asserts all batch-1/2/3/4 tool names; the new
-`firstEventSinceReturnsNewestMatchAndRespectsCutoff` test covers the
-early-exit scan (newest match, predicate, cutoff, unknown channel).
+`./gradlew build` → **38 tests, all green** (JDK 21 toolchain, Java 11 target).
+The tool-list test asserts all batch-1/2/3/4/5 tool names; new tests cover
+the early-exit scan (newest match, predicate, cutoff, unknown channel), the
+generic `channelHistory` query across all five new channels incl. kind/type
+exact-match semantics, `recordFakeXp`, and `firstEventSince` on the new
+buffers.
 
 - `McpEventRecorderTest` (11): var dedupe + oldValue, buffer cap + `dropped`
   accounting, newest-first limits, chat filters, combat-tick separation,

@@ -166,7 +166,13 @@ class McpHttpServerTest
 			"find_path", "get_collision_area", "set_camera",
 			"use_item", "compare_screenshot",
 			"widget_op", "get_actor", "get_tile", "set_var",
-			"toggle_run", "mark_tile", "mark_widget", "clear_marks"})
+			"toggle_run", "mark_tile", "mark_widget", "clear_marks",
+			"get_hint_arrow", "set_hint_arrow", "clear_hint_arrow", "examine",
+			"get_clan", "get_fc", "list_friends", "list_ignore", "list_vars",
+			"enum_def", "struct_def", "anim_def", "list_gfx", "list_ge_offers",
+			"get_instance_map", "db_table", "item_sprite", "get_music",
+			"get_object_history", "get_gfx_history", "get_interact_history",
+			"get_social_history", "get_world_history"})
 		{
 			assertTrue(names.contains(expected), "missing tool " + expected);
 		}

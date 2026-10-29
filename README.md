@@ -170,9 +170,42 @@ anything by itself.
 
 | Tool | Description |
 |---|---|
-| `item_def` | Item cache definition: name, note/placeholder links, stackable, members, tradeable, price, inventory ops |
+| `item_def` | Item cache definition: name, note/placeholder links, stackable, members, tradeable, price, inventory ops; optional `param` resolves one item param key |
 | `npc_def` | NPC cache definition: name, combat level, actions, size, transform ids |
 | `object_def` | Object cache definition: name, actions, size, impostor/transform ids (varbit-driven forms) |
+| `enum_def` | EnumComposition dump: enum id → key/value rows (ints or strings) |
+| `struct_def` | StructComposition dump: struct id → param keys, resolved values for given keys |
+| `anim_def` | Animation definition: frames, duration, per-frame lengths, forced hand items |
+| `db_table` | DBTable cache: list rows by table, dump a row's fields, or query rows by column value |
+
+### Social
+
+| Tool | Description |
+|---|---|
+| `get_clan` | Clan channel info: own + guest channel names, members (name, rank, world) |
+| `get_fc` | Friends chat: owner, channel name, your rank, kick rank, members (name, world, rank) |
+| `list_friends` | Friends list: name + world |
+| `list_ignore` | Ignore list: names + previous names |
+
+### Navigation markers
+
+| Tool | Description |
+|---|---|
+| `get_hint_arrow` | Current hint arrow (server-set navigation marker): type + target tile/NPC/player |
+| `set_hint_arrow` | Client-side hint arrow on a tile, NPC or player |
+| `clear_hint_arrow` | Clear the hint arrow |
+
+### Misc
+
+| Tool | Description |
+|---|---|
+| `examine` | Send an Examine packet (NPC, object, ground item, inventory item) — server replies via chat; pair with `wait_for chat_message` |
+| `list_vars` | Bulk var dump: varps (with `serverValue`) or varcs in an id range |
+| `list_gfx` | Live unattached graphics objects (ground spotanims / AoE telegraphs) |
+| `list_ge_offers` | Grand Exchange offer slots (empty on servers without GE) |
+| `get_instance_map` | Instanced region layout: chunk template grid with source region + rotation |
+| `item_sprite` | Render an item's inventory icon as a PNG image |
+| `get_music` | Active MIDI requests (track archive ids + jingle flag) and music volume |
 
 ### Decision loop (observe → pick → act)
 
@@ -200,6 +233,11 @@ listed — use `item_action`/`invoke_menu_action` for those deliberately.
 | `get_overhead_history` | NPC/player overhead text events — phase-change announcements |
 | `get_interface_history` | Interface group opened/closed/unloaded events — proves the server opened a screen |
 | `get_action_history` | Audit trail of menu options the client invoked (option, target, MenuAction type, params) — what the server actually received |
+| `get_object_history` | Scene object lifecycle: spawned/despawned for game/wall/decorative/ground objects — arena objects, toggling doors |
+| `get_gfx_history` | Unattached graphics object spawns (ground spotanims — AoE telegraphs) |
+| `get_interact_history` | Actor target changes: who targeted/cleared whom — tank swaps, retargets |
+| `get_social_history` | Clan channel + friends chat join/leave/member events |
+| `get_world_history` | world_changed + mapload (instanced region loads) events |
 
 ### Combat extras
 
@@ -265,7 +303,7 @@ listed — use `item_action`/`invoke_menu_action` for those deliberately.
 
 | Tool | Description |
 |---|---|
-| `wait_for` | Block until a condition: idle, at_tile, npc_dead, dialogue, interface_open/closed, chat_message, hitsplat, projectile, animation, spotanim, var (exact value, or omit `value` for any change), stat (boosted/real level change), menu (menu open), in_combat/out_of_combat, prayer, ticks, spawn/despawn/transform, loot, overhead, xp, container, action, world — checked every 100ms via an early-exit event scan, returns immediately when met. Event-based conditions only see new events after the call starts |
+| `wait_for` | Block until a condition: idle, at_tile, npc_dead, dialogue, interface_open/closed, chat_message, hitsplat, projectile, animation, spotanim, var (exact value, or omit `value` for any change), stat (level change), menu (menu open), game_state, object_spawn/despawn, interacting (target change), gfx (ground graphic), hintarrow, in_combat/out_of_combat, prayer, ticks, spawn/despawn/transform, loot, overhead, xp, container, action, world — checked every 100ms via an early-exit event scan, returns immediately when met. Event-based conditions only see new events after the call starts |
 
 All history tools report a `dropped` count — how many events were evicted from
 the bounded buffer — so truncation is visible instead of silent.
